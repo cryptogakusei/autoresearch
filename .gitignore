@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Instance secrets
+sssp/.env
+.env
+
+# Large data files (download separately)
+sssp/data/
+
+# Runtime state — changes every run, not meaningful to track
+sssp/master.json
+sssp/results.tsv
+sssp/exploitation-progress.json
+sssp/idea-store.json
+sssp/idea-store-archive.json
+sssp/artifacts/
+sssp/proposal.md
+sssp/objections.md
+sssp/final-proposal.md
+sssp/experiment-result.md
+sssp/exploration-result.md
+sssp/unexplored-ideas.md
+sssp/do-not-repeat.md
+sssp/progress.log
+sssp/context/references.md
+sssp/verifier/verdict.json
+
+# macOS
+.DS_Store

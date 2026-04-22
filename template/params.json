@@ -1,0 +1,4 @@
+{
+  "_comment": "Add your tunable parameters here. The framework passes this file to agents and writes back agent-proposed changes. Keep this as a flat dict of primitive values.",
+  "example_param": 1
+}

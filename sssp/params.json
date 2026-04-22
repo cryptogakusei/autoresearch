@@ -1,0 +1,6 @@
+{
+  "algorithm": "dijkstra_two_level_bucket_lazy_deletion",
+  "adjacency_layout": "SoA_CSR",
+  "prefetch_ahead": 6,
+  "coarse_bucket_width": 32
+}

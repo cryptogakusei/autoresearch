@@ -1,0 +1,32 @@
+{
+  "artifact":               "src/YOUR_ARTIFACT.ext",
+  "artifact_snapshot_name": "YOUR_ARTIFACT.ext",
+  "artifact_language":      "Your language (e.g. C++17, Python 3.11)",
+  "artifact_xml_tag":       "your_artifact",
+  "params":                 "params.json",
+  "build_command":          "your build command here",
+  "benchmark":              "benchmark.sh",
+  "verifier_command":       ["bash", "verifier/verify.sh"],
+  "verdict_output_path":    "verifier/verdict.json",
+  "metric_name":            "your_metric",
+  "metric_direction":       "lower_is_better",
+  "benchmark_description":  "Describe your benchmark: what dataset, how many runs, what aggregation",
+  "correctness_constraint": "Describe what correctness means for your problem",
+  "fallback_queries": [
+    "your domain keyword 1",
+    "your domain keyword 2",
+    "your domain keyword 3"
+  ],
+  "model":                       "claude-opus-4-6",
+  "max_tokens_implementation":   32000,
+  "max_tokens_default":          8192,
+  "schedule": {
+    "explore_every_N":     5,
+    "explore_budget":      2,
+    "max_debate_rounds":   2,
+    "scout_every_N":       10
+  },
+  "hard_blocked": [
+    "data/"
+  ]
+}

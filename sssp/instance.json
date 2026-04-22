@@ -1,0 +1,35 @@
+{
+  "artifact":               "src/sssp.cpp",
+  "artifact_snapshot_name": "sssp.cpp",
+  "artifact_language":      "C++17",
+  "artifact_xml_tag":       "sssp_cpp",
+  "params":                 "params.json",
+  "build_command":          "g++ -O2 -std=c++17",
+  "benchmark":              "autoresearch.sh",
+  "verifier_command":       ["bash", "verifier/verify.sh"],
+  "verdict_output_path":    "verifier/verdict.json",
+  "metric_name":            "runtime_ms",
+  "metric_direction":       "lower_is_better",
+  "benchmark_description":  "DIMACS CAL road network (USA-road-d.CAL, 1,890,815 nodes, 4,657,742 edges), 5 source nodes, median runtime",
+  "correctness_constraint": "all shortest-path distances match reference Dijkstra exactly",
+  "fallback_queries": [
+    "shortest path algorithm road network practical implementation",
+    "priority queue cache efficient graph algorithms",
+    "SSSP sparse graph data structure optimization",
+    "Dijkstra improvement algorithm engineering"
+  ],
+  "model":                       "claude-opus-4-6",
+  "max_tokens_implementation":   32000,
+  "max_tokens_default":          8192,
+  "schedule": {
+    "explore_every_N":     5,
+    "explore_budget":      2,
+    "max_debate_rounds":   2,
+    "scout_every_N":       10
+  },
+  "hard_blocked": [
+    "src/dijkstra_ref.cpp",
+    "verifier/verify.py",
+    "data/"
+  ]
+}
