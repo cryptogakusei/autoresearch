@@ -33,6 +33,13 @@ The verifier enforces: {{CORRECTNESS_CONSTRAINT}}
 ### do-not-repeat.md (exhausted ideas — NEVER propose these)
 {{DO_NOT_REPEAT}}
 
+### Profile data from previous experiment
+Note: this reflects the *previous* experiment's benchmark run. The debate happens before implementation, so this shows what was learned last cycle — use it to reason about performance characteristics, not to predict current state.
+{{PROFILE_DATA}}
+
+### Recent experiment summaries (causal analysis from last N experiments)
+{{RECENT_EXPERIMENTS}}
+
 ---
 
 ## Domain context
@@ -45,10 +52,11 @@ The verifier enforces: {{CORRECTNESS_CONSTRAINT}}
 
 Think carefully. You have the full experiment history above. Ask yourself:
 
-1. What is the current performance bottleneck? (Look at recent results — where is time being spent?)
+1. What is the current performance bottleneck? (Look at recent results and profile data — where is time being spent?)
 2. What single change is most likely to improve `{{METRIC_NAME}}` by a meaningful amount?
 3. Is there anything in the idea window whose `blocked_by` condition is now met?
-4. Have recent experiments unlocked a cross-compose candidate?
+4. Have recent experiments unlocked a cross-compose candidate? (Check recent experiment summaries for falsifiable predictions and suggested follow-ups.)
+5. Does any failure memory on ideas in the window change your assessment of their viability?
 
 **Hard constraints:**
 - Do NOT propose anything listed in `do-not-repeat.md`.
@@ -60,9 +68,8 @@ Think carefully. You have the full experiment history above. Ask yourself:
 
 ## Output
 
-Output ONLY the content of `proposal.md` in the exact format below. Do not add any preamble, explanation, or text outside this format. The control plane will write the file directly from your output.
+Output ONLY the content of `proposal.md` in the exact format below. Do not add any preamble, explanation, or text outside this format. Do NOT wrap in backticks or a code block. The control plane will write the file directly from your output — the first line must be `Idea:`.
 
-```
 Idea: <one sentence — what exact change to make>
 Mechanism: <why this should work — the full causal chain from change → improvement, with enough detail that a skeptic can challenge specific links>
 Expected signal: <predicted change in {{METRIC_NAME}} — be specific (e.g., "5–15% improvement on the primary benchmark") — and why that magnitude>
@@ -76,6 +83,5 @@ Known risks:
   - <add more as needed>
 Not in do-not-repeat because: <one sentence explaining why this is not a repeat of any exhausted idea>
 Ideas cited: <comma-separated IDs of ideas from the candidate window that directly informed this proposal, e.g. "idea-042, idea-031" — or NONE if you arrived at this independently>
-```
 
 Output nothing else.

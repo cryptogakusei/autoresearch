@@ -32,11 +32,14 @@ References:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import random
 import re
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -251,8 +254,45 @@ def format_window_for_prompt(
         )
         if idea.get("blocked_by"):
             lines.append(f"blocked_by: {idea['blocked_by']}")
+        # Enhancement 4: render failure memory as tentative (medium/high confidence only)
+        fh   = idea.get("failure_hypothesis")
+        conf = idea.get("failure_confidence")
+        if fh and conf in ("medium", "high"):
+            from_exp = idea.get("failure_hypothesis_from", "unknown")
+            lines.append(f"failure_memory: [{conf}, from {from_exp}] {fh}")
+            rc = idea.get("revive_condition")
+            if rc:
+                lines.append(f"revive_condition: {rc}")
         lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Enhancement 4: failure-memory helpers
+# ---------------------------------------------------------------------------
+
+# Confidence ranking for the overwrite rule: a stored hypothesis can only be
+# replaced by one with strictly higher confidence.
+_CONF_RANK: dict[str | None, int] = {"low": 1, "medium": 2, "high": 3, None: 0}
+
+
+def _should_overwrite_failure(old_conf: str | None, new_conf: str | None) -> bool:
+    """Return True only if new_conf strictly exceeds old_conf.
+
+    This prevents a weaker attribution from overwriting a stronger one,
+    and prevents writing when no confidence is provided.
+    """
+    if new_conf is None:
+        return False
+    return _CONF_RANK.get(new_conf, 0) > _CONF_RANK.get(old_conf, 0)
+
+
+def _clear_failure_memory(idea: dict[str, Any]) -> None:
+    """Clear all four failure-memory fields atomically."""
+    idea["failure_hypothesis"]      = None
+    idea["failure_confidence"]      = None
+    idea["failure_hypothesis_from"] = None
+    idea["revive_condition"]        = None
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +335,26 @@ def apply_signals(
                 float(idea.get("base_score", 0.5)) - MAX_PENALIZE,
             )
             signals_applied += 1
+            # Enhancement 4: write failure-memory fields only if confidence is strictly
+            # higher than the existing stored confidence (prevents weak attributions
+            # from overwriting stronger ones).
+            new_conf = sig.get("failure_confidence")
+            if "failure_hypothesis" in sig and _should_overwrite_failure(
+                idea.get("failure_confidence"), new_conf
+            ):
+                idea["failure_hypothesis"]      = sig["failure_hypothesis"]
+                idea["failure_confidence"]      = new_conf
+                idea["failure_hypothesis_from"] = sig.get("failure_hypothesis_from")
+                idea["revive_condition"]        = sig.get("revive_condition")
+                log.debug(
+                    "failure_memory written: id=%s conf=%s from=%s",
+                    idea_id, new_conf, sig.get("failure_hypothesis_from"),
+                )
+            elif "failure_hypothesis" in sig:
+                log.debug(
+                    "failure_memory suppressed (existing conf=%s >= new conf=%s): id=%s",
+                    idea.get("failure_confidence"), new_conf, idea_id,
+                )
         elif signal_type == "supersede":
             idea["status"] = f"superseded_by:exp-{current_exp}"
             signals_applied += 1
@@ -303,6 +363,8 @@ def apply_signals(
             idea["times_in_window"]  = 0
             idea["last_in_window_exp"] = 0
             idea["status"]           = "active"
+            _clear_failure_memory(idea)
+            log.debug("failure_memory cleared on revive: id=%s", idea_id)
             signals_applied += 1
 
     # Assign IDs and append new entries
@@ -391,6 +453,11 @@ def record_citation_outcome(
                 BASE_SCORE_MAX,
                 float(idea.get("base_score", 0.5)) + MAX_BOOST,
             )
+            # Enhancement 4: a later success is the strongest refutation of prior blame.
+            # Clear stale failure memory so old hypotheses don't persist after validation.
+            if idea.get("failure_hypothesis") is not None:
+                _clear_failure_memory(idea)
+                log.debug("failure_memory cleared on kept citation: id=%s", idea_id)
         else:  # FAIL-METRIC
             idea["base_score"] = max(
                 BASE_SCORE_MIN,

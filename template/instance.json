@@ -24,7 +24,9 @@
     "explore_every_N":     5,
     "explore_budget":      2,
     "max_debate_rounds":   2,
-    "scout_every_N":       10
+    "scout_every_N":       10,
+    "recent_experiments_window":        5,
+    "recent_experiments_max_lines_per": 50
   },
   "hard_blocked": [
     "data/"

@@ -418,3 +418,174 @@ class TestMbmmInit:
         import mbmm
         mbmm.init(tmp_path)
         assert mbmm.IDEA_STORE_PATH.is_absolute()
+
+
+# ===========================================================================
+# Enhancement 1: PROFILE line parsing
+# ===========================================================================
+
+class TestProfileLineParsing:
+    """Test PROFILE line parsing in run_benchmark() and _format_profile_data()."""
+
+    def _run_with_stdout(self, stdout: str, returncode: int = 0):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=returncode, stdout=stdout, stderr=""
+            )
+            return cp.run_benchmark()
+
+    def test_profile_lines_stored_in_side_channel(self):
+        cp._last_profile_data.clear()
+        self._run_with_stdout(
+            f"METRIC {cp.METRIC_NAME}=42\nPROFILE cache_misses=1000\nPROFILE memory_kb=512\n"
+        )
+        assert cp._last_profile_data.get("cache_misses") == 1000.0
+        assert cp._last_profile_data.get("memory_kb") == 512.0
+
+    def test_profile_lines_capped_at_20(self):
+        cp._last_profile_data.clear()
+        profile_lines = "\n".join(f"PROFILE k{i}={i}" for i in range(30))
+        self._run_with_stdout(f"METRIC {cp.METRIC_NAME}=42\n{profile_lines}\n")
+        assert len(cp._last_profile_data) == 20
+
+    def test_malformed_profile_value_ignored(self):
+        cp._last_profile_data.clear()
+        self._run_with_stdout(
+            f"METRIC {cp.METRIC_NAME}=42\nPROFILE bad=notanumber\nPROFILE good=7.0\n"
+        )
+        assert "bad" not in cp._last_profile_data
+        assert cp._last_profile_data.get("good") == 7.0
+
+    def test_profile_cleared_on_nonzero_exit(self):
+        cp._last_profile_data["stale"] = 99.0
+        self._run_with_stdout(f"METRIC {cp.METRIC_NAME}=42\nPROFILE x=1\n", returncode=1)
+        assert cp._last_profile_data == {}
+
+    def test_profile_cleared_on_missing_metric(self):
+        cp._last_profile_data["stale"] = 99.0
+        self._run_with_stdout("PROFILE x=1\n")
+        assert cp._last_profile_data == {}
+
+    def test_format_profile_data_empty(self):
+        cp._last_profile_data.clear()
+        assert cp._format_profile_data() == "(no profile data collected)"
+
+    def test_format_profile_data_nonempty(self):
+        cp._last_profile_data.clear()
+        cp._last_profile_data["cache_misses"] = 1000.0
+        result = cp._format_profile_data()
+        assert "cache_misses" in result
+        assert "1000.0" in result
+
+
+# ===========================================================================
+# Enhancement 3: _load_recent_experiment_summaries
+# ===========================================================================
+
+class TestLoadRecentExperimentSummaries:
+    """Test rolling experiment summary loader."""
+
+    def test_n_zero_returns_disabled_message(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cp, "ARTIFACTS_DIR", tmp_path)
+        result = cp._load_recent_experiment_summaries(0, 10)
+        assert result == "(no recent experiment summaries)"
+
+    def test_empty_artifacts_dir_returns_placeholder(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cp, "ARTIFACTS_DIR", tmp_path)
+        result = cp._load_recent_experiment_summaries(5, 5)
+        assert result == "(no recent experiment summaries)"
+
+    def test_loads_analysis_section_from_result_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cp, "ARTIFACTS_DIR", tmp_path)
+        monkeypatch.setattr(cp, "RECENT_EXPERIMENTS_MAX_LINES_PER", 50)
+        exp_dir = tmp_path / "exp-001"
+        exp_dir.mkdir()
+        (exp_dir / "experiment-result.md").write_text(
+            "Experiment ID: exp-001\nStatus: PASS\n\n## Analysis\nPrimary cause: it worked.\n"
+        )
+        result = cp._load_recent_experiment_summaries(5, 1)
+        assert "exp-001" in result
+        assert "Primary cause" in result
+
+    def test_skips_missing_experiment_dirs(self, tmp_path, monkeypatch):
+        """Experiments 1 and 3 exist; experiment 2 is abandoned (no dir)."""
+        monkeypatch.setattr(cp, "ARTIFACTS_DIR", tmp_path)
+        monkeypatch.setattr(cp, "RECENT_EXPERIMENTS_MAX_LINES_PER", 50)
+        for n in (1, 3):
+            d = tmp_path / f"exp-{n:03d}"
+            d.mkdir()
+            (d / "experiment-result.md").write_text(
+                f"Experiment ID: exp-{n:03d}\nStatus: PASS\n\n## Analysis\ncause {n}\n"
+            )
+        result = cp._load_recent_experiment_summaries(5, 3)
+        assert "exp-003" in result
+        assert "exp-001" in result
+        # Missing exp-002 should not cause any error
+
+    def test_falls_back_to_full_file_when_no_analysis_section(self, tmp_path, monkeypatch):
+        """Pre-Enhancement-2 files without ## Analysis section use full content."""
+        monkeypatch.setattr(cp, "ARTIFACTS_DIR", tmp_path)
+        monkeypatch.setattr(cp, "RECENT_EXPERIMENTS_MAX_LINES_PER", 50)
+        exp_dir = tmp_path / "exp-001"
+        exp_dir.mkdir()
+        (exp_dir / "experiment-result.md").write_text(
+            "Experiment ID: exp-001\nStatus: FAIL-METRIC\nOld format with no Analysis heading.\n"
+        )
+        result = cp._load_recent_experiment_summaries(5, 1)
+        assert "Old format" in result
+
+    def test_line_cap_applied_per_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cp, "ARTIFACTS_DIR", tmp_path)
+        monkeypatch.setattr(cp, "RECENT_EXPERIMENTS_MAX_LINES_PER", 3)
+        exp_dir = tmp_path / "exp-001"
+        exp_dir.mkdir()
+        long_content = "\n".join(f"line {i}" for i in range(20))
+        (exp_dir / "experiment-result.md").write_text(
+            f"Status: PASS\n\n## Analysis\n{long_content}\n"
+        )
+        result = cp._load_recent_experiment_summaries(5, 1)
+        assert "...(truncated)" in result
+
+    def test_instance_reload_does_not_bleed_schedule_values(self, tmp_path):
+        """Fix for finding 1: missing schedule key resets to literal default, not prior global."""
+        # First instance sets a non-default value
+        config1 = _minimal_instance_config(tmp_path)
+        config1["schedule"]["recent_experiments_window"] = 0
+        cp.apply_instance_config(config1, tmp_path)
+        assert cp.RECENT_EXPERIMENTS_WINDOW == 0
+
+        # Second instance omits the key — must reset to default (5), not inherit 0
+        config2 = _minimal_instance_config(tmp_path)
+        config2["schedule"].pop("recent_experiments_window", None)
+        cp.apply_instance_config(config2, tmp_path)
+        assert cp.RECENT_EXPERIMENTS_WINDOW == 5
+
+
+def _minimal_instance_config(tmp_path: Path) -> dict:
+    """Build a minimal valid instance config for testing apply_instance_config()."""
+    (tmp_path / "agent_prompts").mkdir(exist_ok=True)
+    (tmp_path / "agent_prompts" / "domain_context.md").write_text("")
+    (tmp_path / "verifier" / "verdict.json").parent.mkdir(parents=True, exist_ok=True)
+    return {
+        "artifact": "src/artifact.cpp",
+        "artifact_snapshot_name": "artifact.cpp",
+        "artifact_xml_tag": "artifact_cpp",
+        "artifact_language": "C++17",
+        "params": "params.json",
+        "build_command": "g++ -O2",
+        "benchmark": "benchmark.sh",
+        "verifier_command": ["bash", "verifier/verify.sh"],
+        "verdict_output_path": "verifier/verdict.json",
+        "metric_name": "runtime_ms",
+        "metric_direction": "lower_is_better",
+        "benchmark_description": "",
+        "correctness_constraint": "",
+        "fallback_queries": [],
+        "hard_blocked": [],
+        "schedule": {
+            "explore_every_N": 5,
+            "explore_budget": 2,
+            "max_debate_rounds": 2,
+            "scout_every_N": 10,
+        },
+    }

@@ -86,15 +86,51 @@ fi
 
 # ---------------------------------------------------------------------------
 # 4 & 5. Run benchmark on each source, collect times and relaxations
+# Wall-clock time is measured externally (covers full binary end-to-end).
+# Internal time_ms= from the binary is collected as profile data only.
 # ---------------------------------------------------------------------------
 declare -a TIMES_MS
+declare -a INTERNAL_TIMES_MS
 TOTAL_RELAXATIONS=0
 
 for SOURCE in "${SOURCES[@]}"; do
-    OUTPUT=$("$BIN" "$GRAPH" "$SOURCE" 2>/dev/null)
+    # Wipe any cross-run disk cache the binary may have written previously.
+    # This prevents preprocessing results from being amortized across repeated runs,
+    # which would hide the true per-query cost from the metric.
+    rm -f /tmp/sssp_cache* /tmp/sssp_preproc* /tmp/sssp_ch* /tmp/sssp_prep*
 
-    # Parse time_ms
-    TIME_MS=$(printf '%s\n' "$OUTPUT" | python3 -c "
+    # Run binary under Python timing wrapper to capture full wall-clock time.
+    # Written to a temp file to avoid macOS Python 3.9 issues with 'python3 -' + heredoc
+    # (consumed-stdin pipe causes _execute_child to fail on some macOS versions).
+    _TIMER=$(mktemp /tmp/sssp_timer_XXXXXX.py)
+    cat > "$_TIMER" << 'PYEOF'
+import subprocess, time, sys
+bin_, graph, source = sys.argv[1], sys.argv[2], sys.argv[3]
+t0 = time.perf_counter()
+proc = subprocess.run([bin_, graph, source], capture_output=True, text=True,
+                      stdin=subprocess.DEVNULL)
+wall_ms = (time.perf_counter() - t0) * 1000
+sys.stdout.write(proc.stdout)
+print(f"wall_ms={wall_ms:.3f}")
+PYEOF
+    OUTPUT=$(python3 "$_TIMER" "$BIN" "$GRAPH" "$SOURCE")
+    rm -f "$_TIMER"
+
+    # Parse wall_ms (external — covers parsing, preprocessing, Dijkstra, reconstruction)
+    WALL_MS=$(printf '%s\n' "$OUTPUT" | python3 -c "
+import sys, re
+for line in sys.stdin:
+    m = re.search(r'wall_ms=([0-9]+(?:\.[0-9]+)?)', line)
+    if m:
+        print(m.group(1))
+        break
+else:
+    print('0')
+")
+    TIMES_MS+=("$WALL_MS")
+
+    # Parse internal time_ms (self-reported by binary — Dijkstra loop only, used as profile)
+    INTERNAL_MS=$(printf '%s\n' "$OUTPUT" | python3 -c "
 import sys, re
 for line in sys.stdin:
     m = re.search(r'time_ms=([0-9]+(?:\.[0-9]+)?)', line)
@@ -104,7 +140,7 @@ for line in sys.stdin:
 else:
     print('0')
 ")
-    TIMES_MS+=("$TIME_MS")
+    INTERNAL_TIMES_MS+=("$INTERNAL_MS")
 
     # Parse relaxations
     RELAXATIONS=$(printf '%s\n' "$OUTPUT" | python3 -c "
@@ -124,9 +160,16 @@ else:
 done
 
 # ---------------------------------------------------------------------------
-# 4. Compute median of the 5 runtimes
+# 4. Compute median of the 5 runtimes (wall-clock) and internal profile time
 # ---------------------------------------------------------------------------
 MEDIAN_MS=$(python3 - <<PYEOF "${TIMES_MS[@]}"
+import sys, statistics
+vals = [float(x) for x in sys.argv[1:]]
+print(statistics.median(vals))
+PYEOF
+)
+
+MEDIAN_INTERNAL_MS=$(python3 - <<PYEOF "${INTERNAL_TIMES_MS[@]}"
 import sys, statistics
 vals = [float(x) for x in sys.argv[1:]]
 print(statistics.median(vals))
@@ -153,8 +196,10 @@ else:
 fi
 
 # ---------------------------------------------------------------------------
-# Output METRIC lines
+# Output METRIC lines (wall-clock covers full binary end-to-end)
 # ---------------------------------------------------------------------------
 echo "METRIC runtime_ms=${MEDIAN_MS}"
 echo "METRIC relaxations=${TOTAL_RELAXATIONS}"
 echo "METRIC memory_mb=${PEAK_RSS_MB}"
+# Internal Dijkstra-loop time from the binary (excludes preprocessing/reconstruction)
+echo "PROFILE internal_dijkstra_ms=${MEDIAN_INTERNAL_MS}"

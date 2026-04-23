@@ -78,6 +78,9 @@ The control plane has run the experiment. You now have the results. Your job is 
 {{VERIFIER_RESULT}}
 ```
 
+### Profile data (from benchmark run)
+{{PROFILE_DATA}}
+
 ### Report instructions
 
 1. Compute delta in absolute units and percentage. If the result is not an improvement ({{METRIC_DIRECTION}}), that is a regression.
@@ -86,7 +89,11 @@ The control plane has run the experiment. You now have the results. Your job is 
    - `FAIL-VERIFIER` if verifier failed
    - `FAIL-METRIC` if verifier passed but metric did not improve
 3. For the implementation artifact, write a unified diff of the changes made (not the full file). If only params.json changed, diff only params.json. Focus the diff on what actually changed.
-4. In the Analysis section, explain causally WHY the result occurred. Do not just restate the numbers. If it failed, hypothesize specifically what went wrong. If it succeeded, explain which part of the mechanism was confirmed.
+4. In the Analysis section, write a structured causal account using all four required sub-fields. Apply to PASS and FAIL alike — successful experiments are equally informative.
+   - **Primary cause**: one sentence. Begin with what was observed in the output or metrics, then state the inference. Pattern: "[observed X], [therefore Y is the likely cause]."
+   - **Evidence**: what in the metric values, verifier output, or profile data directly supports the primary cause. Be specific — cite numbers or verifier detail.
+   - **Falsifiable prediction**: if you ran variant X (a concrete, executable variant), you would expect Y. This must be a testable claim, not a restatement of the primary cause.
+   - **Suggested follow-up**: the single most promising next experiment given this result. Prioritize follow-ups that could resolve ambiguity in the primary cause.
 5. `dead forever`: mark YES only if this specific direction is provably exhausted — e.g., the mechanism is fundamentally inapplicable to this artifact/benchmark. Mark NO if there is a plausible revive condition (different parameter range, different code context, combination with another change).
 6. Cross-compose candidates: name specific prior experiment IDs (exp-N) that would pair well with this result, and say exactly why.
 
@@ -118,7 +125,10 @@ delta: <signed delta> (<signed %>, {{METRIC_DIRECTION}})
 confidence: <MAD-based score from verifier result, or "N/A if verifier failed">
 
 ## Analysis
-Why it worked / didn't work: <2–4 sentences of causal explanation>
+**Primary cause:** <one sentence — begin with observation, end with inference>
+**Evidence:** <what in the output/metrics/verifier/profile directly supports this>
+**Falsifiable prediction:** <if you ran variant X, you would expect Y>
+**Suggested follow-up:** <the single most promising next experiment>
 Conditional:
   dead forever: YES / NO
   if NO — revive condition: <specific condition under which this direction is worth retrying>

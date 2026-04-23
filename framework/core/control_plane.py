@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import time
 import shutil
 import socket
 import subprocess
@@ -117,6 +118,17 @@ SCHEDULE_EXPLORE_EVERY_N  = 5
 SCHEDULE_EXPLORE_BUDGET   = 2
 SCHEDULE_MAX_DEBATE_ROUNDS = 2
 SCHEDULE_SCOUT_EVERY_N    = 10
+
+# Enhancement 1: PROFILE line side-channel.
+# Populated by run_benchmark() after each run; cleared on failure or instance reload.
+# Module-level because the benchmark result needs to be available to agents called
+# later in the same experiment (report phase, Researcher A in the next debate).
+_last_profile_data: dict[str, float] = {}
+
+# Enhancement 3: rolling experiment summary window.
+# Configurable via instance.json schedule block.
+RECENT_EXPERIMENTS_WINDOW: int       = 5   # number of recent summaries injected into Researcher A; 0 = disabled
+RECENT_EXPERIMENTS_MAX_LINES_PER: int = 50  # per-experiment-result line cap to control token budget
 
 
 def _assert_instance_configured() -> None:
@@ -393,6 +405,8 @@ def _common_subs() -> dict[str, str]:
         "BUILD_COMMAND":     "g++ -O2 -std=c++17",
         "BENCHMARK_DESCRIPTION": "DIMACS CAL road network, 5 source nodes, median runtime",
         "CORRECTNESS_CONSTRAINT": "all shortest-path distances match reference Dijkstra exactly",
+        # Enhancement 1: last benchmark's PROFILE lines (empty placeholder when unavailable)
+        "PROFILE_DATA":      _format_profile_data(),
     }
 
 
@@ -450,6 +464,78 @@ def recent_results(n: int = 10) -> str:
         return "(none yet)"
 
 
+def _format_profile_data() -> str:
+    """Format _last_profile_data as a human-readable string for agent prompts.
+
+    Returns a placeholder string when no profile data is available, so templates
+    always render cleanly (no dangling section headers).
+    """
+    if not _last_profile_data:
+        return "(no profile data collected)"
+    return "\n".join(f"{k} = {v}" for k, v in _last_profile_data.items())
+
+
+def _extract_section(content: str, heading: str) -> str:
+    """Extract the body of a markdown section from its heading until the next
+    same-or-higher-level heading (or EOF).
+
+    Example: _extract_section(text, "## Analysis") returns everything between
+    "## Analysis\\n" and the next "## " heading or end of file.
+    """
+    pat = re.compile(
+        r"^" + re.escape(heading) + r"\n(.*?)(?=\n## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    m = pat.search(content)
+    return m.group(1).strip() if m else ""
+
+
+def _load_recent_experiment_summaries(n: int, total_experiments: int) -> str:
+    """Load Analysis sections from the N most recent experiment-result.md files.
+
+    Reads total_experiments from the caller (sourced from exploitation-progress.json)
+    and iterates backwards, skipping experiments with no archived result file
+    (ABANDONED, TIMEOUT, implementation failures).
+
+    Returns a formatted string for injection into {{RECENT_EXPERIMENTS}}.
+    """
+    if n <= 0:
+        return "(no recent experiment summaries)"
+
+    summaries: list[str] = []
+    i = total_experiments
+    while i >= 1 and len(summaries) < n:
+        eid = experiment_id(i)
+        result_file = ARTIFACTS_DIR / eid / "experiment-result.md"
+        if result_file.exists():
+            content = result_file.read_text()
+            # Extract ## Analysis section; fall back to full file for pre-Enhancement-2 experiments
+            section = _extract_section(content, "## Analysis")
+            if not section:
+                section = content
+
+            # Apply per-file line cap
+            lines = section.splitlines()
+            if len(lines) > RECENT_EXPERIMENTS_MAX_LINES_PER:
+                lines = lines[:RECENT_EXPERIMENTS_MAX_LINES_PER]
+                lines.append("...(truncated)")
+
+            # Pull status from result file for the summary header
+            status_m = re.search(r"^Status:\s*(\S+)", content, re.MULTILINE)
+            status_str = status_m.group(1) if status_m else "unknown"
+
+            summaries.append(f"### {eid} (status: {status_str})\n" + "\n".join(lines))
+        i -= 1
+
+    if not summaries:
+        return "(no recent experiment summaries)"
+
+    loaded_count = len(summaries)
+    total_chars  = sum(len(s) for s in summaries)
+    print(f"  [DEBUG] Loaded {loaded_count} recent experiment summary(ies) ({total_chars} chars)")
+    return "\n\n".join(summaries)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -467,7 +553,12 @@ def exploration_id(n: int) -> str:
 # ---------------------------------------------------------------------------
 
 def run_benchmark() -> dict[str, float] | None:
-    """Run benchmark script, parse METRIC lines, return dict or None on failure."""
+    """Run benchmark script, parse METRIC and PROFILE lines, return dict or None on failure.
+
+    Side-effect: populates _last_profile_data with any PROFILE key=value lines emitted
+    by the benchmark (capped at 20 lines). Cleared to {} on any failure path.
+    """
+    global _last_profile_data
     try:
         result = subprocess.run(
             ["bash", BENCHMARK_SCRIPT],
@@ -478,19 +569,39 @@ def run_benchmark() -> dict[str, float] | None:
         )
     except subprocess.TimeoutExpired:
         print(f"  [WARN] {BENCHMARK_SCRIPT} timed out (600s limit)")
+        _last_profile_data = {}
         return None
     if result.returncode != 0:
         print(f"  [WARN] {BENCHMARK_SCRIPT} failed (rc={result.returncode})")
         print(f"  stderr: {result.stderr[:500]}")
+        _last_profile_data = {}
         return None
 
     metrics: dict[str, float] = {}
+    profile: dict[str, float] = {}
     for line in result.stdout.splitlines():
-        m = re.match(r"METRIC\s+(\w+)=([0-9.]+)", line)
+        m = re.match(r"METRIC\s+(\w+)=([0-9eE.+-]+)", line)
         if m:
-            metrics[m.group(1)] = float(m.group(2))
+            try:
+                metrics[m.group(1)] = float(m.group(2))
+            except ValueError:
+                print(f"  [WARN] Malformed METRIC value ignored: {line.strip()}")
+            continue
+        if len(profile) < 20:
+            p = re.match(r"PROFILE\s+(\w+)=([0-9eE.+-]+)", line)
+            if p:
+                try:
+                    profile[p.group(1)] = float(p.group(2))
+                except ValueError:
+                    print(f"  [WARN] Malformed PROFILE value ignored: {line.strip()}")
+
+    _last_profile_data = profile
+    if profile:
+        print(f"  [DEBUG] Parsed {len(profile)} PROFILE line(s)")
+
     if METRIC_NAME not in metrics:
         print(f"  [WARN] {BENCHMARK_SCRIPT} produced no METRIC {METRIC_NAME} line")
+        _last_profile_data = {}
         return None
     return metrics
 
@@ -691,6 +802,9 @@ def run_debate(master: dict, progress: dict) -> tuple[str, str, list[str]]:
     idea_window_text = mbmm.format_window_for_prompt(idea_window, current_exp, total_experiments)
     mbmm.mark_ideas_shown(window_ids, current_exp)
 
+    # Enhancement 3: load recent experiment summaries once per debate round (not per retry)
+    recent_exp_summaries = _load_recent_experiment_summaries(RECENT_EXPERIMENTS_WINDOW, total_experiments)
+
     proposal_content = ""
     for round_n in range(1, max_rounds + 1):
         if round_n == 1:
@@ -704,6 +818,7 @@ def run_debate(master: dict, progress: dict) -> tuple[str, str, list[str]]:
                 "GOAL_MD": goal_md,
                 "REFERENCES_MD": references_md,
                 "CURRENT_PARAMS": current_params,
+                "RECENT_EXPERIMENTS": recent_exp_summaries,
             })
             proposal_content = call_agent(prompt, "researcher-a")
             guarded_write(PROPOSAL_MD, proposal_content, "researcher-a")
@@ -720,6 +835,7 @@ def run_debate(master: dict, progress: dict) -> tuple[str, str, list[str]]:
                 "GOAL_MD": goal_md,
                 "REFERENCES_MD": references_md,
                 "CURRENT_PARAMS": current_params,
+                "RECENT_EXPERIMENTS": recent_exp_summaries,
             })
             # Append objections context to prompt for refinement
             objections_context = f"\n\n---\n## Previous objections (round {round_n-1})\n{read_file(OBJECTIONS_MD)}\n\nRevise your proposal to address the objections above."
@@ -1336,7 +1452,9 @@ def run_literature_scout(progress: dict, scout_n: int) -> None:
     # ------------------------------------------------------------------
     seen_links: set[str] = set()
     all_papers: list[dict] = []
-    for query in queries_to_use:
+    for i, query in enumerate(queries_to_use):
+        if i > 0:
+            time.sleep(4)  # arXiv rate limit: ~1 req/3s
         for paper in fetch_arxiv(query, max_results=4):
             if paper["link"] not in seen_links:
                 seen_links.add(paper["link"])
@@ -1543,6 +1661,7 @@ def apply_instance_config(config: dict[str, Any], instance_dir: Path) -> None:
     global SCHEDULE_EXPLORE_EVERY_N, SCHEDULE_EXPLORE_BUDGET
     global SCHEDULE_MAX_DEBATE_ROUNDS, SCHEDULE_SCOUT_EVERY_N
     global ARTIFACT_PATH, HARD_BLOCKED, WRITE_PERMISSIONS
+    global _last_profile_data, RECENT_EXPERIMENTS_WINDOW, RECENT_EXPERIMENTS_MAX_LINES_PER
 
     # Redirect all instance-dir-based path globals to instance_dir
     _set_instance_paths(instance_dir)
@@ -1560,10 +1679,19 @@ def apply_instance_config(config: dict[str, Any], instance_dir: Path) -> None:
     VERDICT_OUTPUT_PATH        = instance_dir / config["verdict_output_path"]
 
     sched = config.get("schedule", {})
-    SCHEDULE_EXPLORE_EVERY_N   = sched.get("explore_every_N",   SCHEDULE_EXPLORE_EVERY_N)
-    SCHEDULE_EXPLORE_BUDGET    = sched.get("explore_budget",     SCHEDULE_EXPLORE_BUDGET)
-    SCHEDULE_MAX_DEBATE_ROUNDS = sched.get("max_debate_rounds",  SCHEDULE_MAX_DEBATE_ROUNDS)
-    SCHEDULE_SCOUT_EVERY_N     = sched.get("scout_every_N",      SCHEDULE_SCOUT_EVERY_N)
+    # Use literal defaults (not the global names) so that a missing key always
+    # resets to a known value rather than inheriting whatever the previous
+    # instance left in the global. This prevents cross-instance bleed when the
+    # same process loads two instances sequentially.
+    SCHEDULE_EXPLORE_EVERY_N         = sched.get("explore_every_N",                5)
+    SCHEDULE_EXPLORE_BUDGET          = sched.get("explore_budget",                 2)
+    SCHEDULE_MAX_DEBATE_ROUNDS       = sched.get("max_debate_rounds",              2)
+    SCHEDULE_SCOUT_EVERY_N           = sched.get("scout_every_N",                 10)
+    RECENT_EXPERIMENTS_WINDOW        = sched.get("recent_experiments_window",      5)
+    RECENT_EXPERIMENTS_MAX_LINES_PER = sched.get("recent_experiments_max_lines_per", 50)
+
+    # Reset per-run side-channel state on instance reload
+    _last_profile_data = {}
 
     # Set artifact path from instance config
     ARTIFACT_PATH = instance_dir / config["artifact"]

@@ -48,6 +48,9 @@ Open `instance.json` and fill in every field. The schema:
 | `schedule.explore_every_N` | no | Run exploration every N experiments (default: 5) |
 | `schedule.explore_budget` | no | Runs per exploration cycle (default: 2) |
 | `schedule.max_debate_rounds` | no | Max researcher debate rounds (default: 2) |
+| `schedule.scout_every_N` | no | Run literature scout every N experiments (default: 10) |
+| `schedule.recent_experiments_window` | no | Recent experiment summaries injected into Researcher A (default: 5; set 0 to disable) |
+| `schedule.recent_experiments_max_lines_per` | no | Max lines extracted per experiment summary (default: 50) |
 | `hard_blocked` | no | Paths agents can never write (relative to instance dir) |
 
 ### 3. Implement benchmark.sh
@@ -55,15 +58,20 @@ Open `instance.json` and fill in every field. The schema:
 The benchmark script must:
 1. Compile/prepare your artifact
 2. Run it on your test input
-3. Print `METRIC metric_name=value` to stdout (one line per metric)
-4. Exit 0 on success, non-zero on failure
+3. Print `METRIC metric_name=value` to stdout for the primary metric (and optionally secondary metrics)
+4. Optionally print `PROFILE key=value` lines for auxiliary performance data (cache misses, memory, etc.) — these are injected into agent prompts as context but do not affect keep/discard decisions
+5. Exit 0 on success, non-zero on failure
 
 ```bash
-# Example
+# Example — primary metric (required)
 echo "METRIC runtime_ms=42.5"
+
+# Optional profile lines — at most 20; non-numeric values are ignored
+echo "PROFILE cache_misses=4821903"
+echo "PROFILE peak_memory_kb=102400"
 ```
 
-The `metric_name` value must exactly match `instance.json → metric_name`.
+The `metric_name` value must exactly match `instance.json → metric_name`. Profile keys can be any identifier — agents see them as context.
 
 ### 4. Implement verifier/verify.sh
 

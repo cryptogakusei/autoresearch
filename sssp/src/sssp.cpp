@@ -1,15 +1,75 @@
-// SSSP — Dijkstra with two-level bucket queue + lazy deletion
-// SoA adjacency layout + software prefetching for dist[] during edge relaxation
+// SSSP — Delta-stepping with light/heavy edge separation
+// Uses flat array of band worklists with DELTA=4096
+// Light edges (weight < DELTA) are relaxed within current band worklist
+// Heavy edges (weight >= DELTA) are deferred to target band
 #include <cstdio>
+#include <cstdint>
 #include <vector>
 #include <chrono>
 #include <limits>
+#include <cstring>
+#include <cstdlib>
 #include <algorithm>
-#include <cassert>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <time.h>
 using namespace std;
 
-using ll = long long;
-static const ll INF = numeric_limits<ll>::max();
+static const uint32_t INF = numeric_limits<uint32_t>::max();
+
+static inline const char* skip_to_digit(const char* p) {
+    while (*p < '0' || *p > '9') ++p;
+    return p;
+}
+
+static inline const char* parse_uint(const char* p, uint32_t& val) {
+    val = 0;
+    while (*p >= '0' && *p <= '9') {
+        val = val * 10 + (*p - '0');
+        ++p;
+    }
+    return p;
+}
+
+static char outbuf[1 << 22];
+static int outpos = 0;
+
+static inline void flush_out() {
+    if (outpos > 0) {
+        fwrite(outbuf, 1, outpos, stdout);
+        outpos = 0;
+    }
+}
+
+static inline void out_char(char c) {
+    outbuf[outpos++] = c;
+    if (outpos >= (1 << 22) - 64) flush_out();
+}
+
+static inline void out_uint(uint32_t v) {
+    char tmp[12];
+    int len = 0;
+    if (v == 0) {
+        out_char('0');
+        return;
+    }
+    while (v > 0) {
+        tmp[len++] = '0' + (v % 10);
+        v /= 10;
+    }
+    for (int i = len - 1; i >= 0; --i) out_char(tmp[i]);
+}
+
+static inline void out_int(int v) {
+    if (v < 0) {
+        out_char('-');
+        out_uint((uint32_t)(-v));
+    } else {
+        out_uint((uint32_t)v);
+    }
+}
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
@@ -17,265 +77,240 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    FILE* f = fopen(argv[1], "r");
-    if (!f) { perror("open"); return 1; }
+    int fd = open(argv[1], O_RDONLY);
+    if (fd < 0) { perror("open"); return 1; }
+    struct stat st;
+    fstat(fd, &st);
+    size_t filesize = st.st_size;
+    const char* data = (const char*)mmap(nullptr, filesize, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (data == MAP_FAILED) { perror("mmap"); return 1; }
+    close(fd);
+    madvise((void*)data, filesize, MADV_SEQUENTIAL);
 
-    int n = 0, m = 0;
-    char line[256];
-    int max_weight = 0;
+    uint32_t n = 0, m = 0;
+    const char* p = data;
+    const char* end_data = data + filesize;
+    const char* first_arc = nullptr;
 
-    struct RawEdge { int u, v, w; };
-    vector<RawEdge> raw_edges;
-
-    while (fgets(line, sizeof(line), f)) {
-        if (line[0] == 'c') continue;
-        if (line[0] == 'p') {
-            int nn, mm;
-            sscanf(line, "p sp %d %d", &nn, &mm);
-            n = nn; m = mm;
-            raw_edges.reserve(m);
-        } else if (line[0] == 'a') {
-            int u, v, w;
-            sscanf(line, "a %d %d %d", &u, &v, &w);
-            raw_edges.push_back({u, v, w});
-            if (w > max_weight) max_weight = w;
+    // Parse header
+    while (p < end_data) {
+        if (*p == 'c') {
+            while (p < end_data && *p != '\n') ++p;
+            if (p < end_data) ++p;
+        } else if (*p == 'p') {
+            p += 2;
+            while (p < end_data && (*p < '0' || *p > '9')) ++p;
+            uint32_t tmp;
+            p = parse_uint(p, tmp); n = tmp;
+            p = skip_to_digit(p);
+            p = parse_uint(p, tmp); m = tmp;
+            while (p < end_data && *p != '\n') ++p;
+            if (p < end_data) ++p;
+        } else if (*p == 'a') {
+            first_arc = p;
+            break;
+        } else {
+            while (p < end_data && *p != '\n') ++p;
+            if (p < end_data) ++p;
         }
     }
-    fclose(f);
 
-    // Build CSR-style SoA adjacency
-    vector<int> degree(n + 2, 0);
-    for (auto& e : raw_edges) {
-        degree[e.u]++;
-    }
+    // Nodes are 1-based: 1..n
+    vector<uint32_t> degree(n + 2, 0);
 
-    vector<int> offsets(n + 2, 0);
-    for (int i = 1; i <= n; i++) {
-        offsets[i + 1] = offsets[i] + degree[i];
-    }
-    int total_edges = offsets[n + 1];
+    // Temporary edge storage
+    vector<uint32_t> edge_u(m), edge_v(m), edge_w(m);
 
-    vector<int> targets(total_edges);
-    vector<int> weights(total_edges);
-
-    vector<int> cursor(n + 2, 0);
-    for (int i = 1; i <= n + 1; i++) {
-        cursor[i] = offsets[i];
-    }
-
-    for (auto& e : raw_edges) {
-        int pos = cursor[e.u]++;
-        targets[pos] = e.v;
-        weights[pos] = e.w;
-    }
-
-    { vector<RawEdge>().swap(raw_edges); }
-    { vector<int>().swap(degree); }
-    { vector<int>().swap(cursor); }
-
-    int src = atoi(argv[2]);
-
-    // -----------------------------------------------------------------------
-    // Two-level bucket queue with lazy deletion
-    // -----------------------------------------------------------------------
-    static const int W = 32; // coarse bucket width
-
-    // Circular coarse array size: need to cover range of active distances
-    // Active range is at most max_weight ahead of current minimum
-    int num_active_coarse = max_weight / W + 2;
-    int fine_total = num_active_coarse * W;
-
-    // Each fine bucket is a singly-linked list. Since we use lazy deletion,
-    // a node may appear in multiple buckets. We use a pool-based linked list.
-    // Pool entries: each entry has (node_id, next_in_bucket).
-    // We pre-allocate for worst case: n initial + m relaxation insertions.
-    int pool_cap = n + m + 2;
-    vector<int> pool_node(pool_cap);
-    vector<int> pool_next(pool_cap, -1);
-    int pool_size = 0;
-
-    vector<int> fine_head(fine_total, -1);   // head of linked list for each fine bucket
-    vector<int> coarse_count(num_active_coarse, 0); // count of entries (including stale) per coarse bucket
-
-    auto get_coarse = [&](ll d) -> int {
-        return (int)((d / W) % num_active_coarse);
-    };
-    auto get_fine_offset = [&](ll d) -> int {
-        return (int)(d % W);
-    };
-
-    auto bucket_insert = [&](int v, ll d) {
-        int ci = get_coarse(d);
-        int fo = get_fine_offset(d);
-        int fi = ci * W + fo;
-        int idx = pool_size++;
-        pool_node[idx] = v;
-        pool_next[idx] = fine_head[fi];
-        fine_head[fi] = idx;
-        coarse_count[ci]++;
-    };
-
-    // -----------------------------------------------------------------------
-    // Dijkstra with two-level bucket queue + lazy deletion + prefetching
-    // -----------------------------------------------------------------------
-    vector<ll> dist(n + 1, INF);
-    dist[src] = 0;
-
-    bucket_insert(src, 0);
-
-    long long relaxations = 0;
-    int nodes_settled = 0;
-
-    const ll* dist_ptr = dist.data();
-    const int* targets_ptr = targets.data();
-    const int* weights_ptr = weights.data();
-
-    static const int PREFETCH_AHEAD = 6;
-
-    // Current scan position
-    ll cur_coarse_abs = 0;
-    int cur_fine_offset = 0; // fine offset within current coarse bucket being scanned
-
-    auto t0 = chrono::steady_clock::now();
-
-    while (nodes_settled < n) {
-        // Find next non-empty entry
-        // First, find a non-empty coarse bucket starting from current position
-        {
-            int scanned = 0;
-            while (true) {
-                int ci = (int)(cur_coarse_abs % num_active_coarse);
-                if (coarse_count[ci] > 0) break;
-                cur_coarse_abs++;
-                cur_fine_offset = 0;
-                scanned++;
-                if (scanned >= num_active_coarse) goto done;
+    {
+        uint32_t ei = 0;
+        p = first_arc;
+        while (p < end_data) {
+            if (*p == 'a') {
+                p++;
+                p = skip_to_digit(p);
+                uint32_t u;
+                p = parse_uint(p, u);
+                p = skip_to_digit(p);
+                uint32_t v;
+                p = parse_uint(p, v);
+                p = skip_to_digit(p);
+                uint32_t w;
+                p = parse_uint(p, w);
+                edge_u[ei] = u;
+                edge_v[ei] = v;
+                edge_w[ei] = w;
+                degree[u]++;
+                ei++;
+                while (p < end_data && *p != '\n') ++p;
+                if (p < end_data) ++p;
+            } else {
+                while (p < end_data && *p != '\n') ++p;
+                if (p < end_data) ++p;
             }
         }
+    }
 
-        // Process current coarse bucket
-        {
-            int ci = (int)(cur_coarse_abs % num_active_coarse);
-            int fine_base = ci * W;
+    munmap((void*)data, filesize);
 
-            while (coarse_count[ci] > 0 && cur_fine_offset < W) {
-                int fi = fine_base + cur_fine_offset;
-                
-                while (fine_head[fi] != -1) {
-                    // Pop entry from the bucket
-                    int idx = fine_head[fi];
-                    int u = pool_node[idx];
-                    fine_head[fi] = pool_next[idx];
-                    coarse_count[ci]--;
+    // Build CSR offset array
+    vector<uint32_t> offset(n + 2, 0);
+    for (uint32_t i = 1; i <= n; i++) {
+        offset[i + 1] = offset[i] + degree[i];
+    }
 
-                    // Expected distance for this bucket position
-                    ll expected_dist = cur_coarse_abs * W + cur_fine_offset;
+    // Build CSR adjacency arrays
+    vector<uint32_t> csr_to(m);
+    vector<uint32_t> csr_w(m);
 
-                    // Lazy deletion: skip stale entries
-                    if (dist[u] != expected_dist) {
-                        continue;
-                    }
+    memset(degree.data(), 0, (n + 2) * sizeof(uint32_t));
+    for (uint32_t i = 0; i < m; i++) {
+        uint32_t u = edge_u[i];
+        uint32_t idx = offset[u] + degree[u];
+        csr_to[idx] = edge_v[i];
+        csr_w[idx] = edge_w[i];
+        degree[u]++;
+    }
 
-                    nodes_settled++;
+    edge_u.clear(); edge_u.shrink_to_fit();
+    edge_v.clear(); edge_v.shrink_to_fit();
+    edge_w.clear(); edge_w.shrink_to_fit();
+    degree.clear(); degree.shrink_to_fit();
 
-                    int edge_start = offsets[u];
-                    int edge_end = offsets[u + 1];
-                    int num_edges = edge_end - edge_start;
+    // Source node (1-based)
+    uint32_t src = (uint32_t)atoi(argv[2]);
 
-                    for (int k = 0; k < PREFETCH_AHEAD && k < num_edges; k++) {
-                        __builtin_prefetch(&dist_ptr[targets_ptr[edge_start + k]], 0, 1);
-                    }
+    // Delta-stepping parameter
+    static const uint32_t DELTA = 4096;
 
-                    // Track if we need to reset scan pointer
-                    bool need_reset = false;
-                    ll reset_coarse_abs = cur_coarse_abs;
-                    int reset_fine_offset = cur_fine_offset;
+    // dist array: indices 0..n, use indices 1..n (1-based)
+    vector<uint32_t> dist(n + 1, INF);
+    dist[src] = 0;
 
-                    for (int i = edge_start; i < edge_end; i++) {
-                        if (i + PREFETCH_AHEAD < edge_end) {
-                            __builtin_prefetch(&dist_ptr[targets_ptr[i + PREFETCH_AHEAD]], 0, 1);
-                        }
+    // Band buckets for delta-stepping
+    // For road networks max distance is typically < 40M, so max band ~ 40M/4096 ~ 9766.
+    // Allocate 131072 bands to be safe (covers distances up to ~537M).
+    static const uint32_t NUM_BAND_BUCKETS = 131072;
+    vector<vector<uint32_t>> band_bucket(NUM_BAND_BUCKETS);
 
-                        int v = targets_ptr[i];
-                        int w = weights_ptr[i];
-                        ll nd = expected_dist + w;
-                        if (nd < dist[v]) {
-                            dist[v] = nd;
-                            bucket_insert(v, nd);
-                            relaxations++;
+    // Worklist for light-edge relaxations within current band
+    vector<uint32_t> light_worklist;
+    // Temporary collection for heavy-edge targets
+    vector<uint32_t> heavy_targets;
 
-                            // Check if inserted behind current scan position
-                            ll new_coarse_abs = nd / W;
-                            int new_fine_off = (int)(nd % W);
-                            if (new_coarse_abs < cur_coarse_abs ||
-                                (new_coarse_abs == cur_coarse_abs && new_fine_off < cur_fine_offset)) {
-                                // Need to reset scan pointer backward
-                                if (!need_reset || new_coarse_abs < reset_coarse_abs ||
-                                    (new_coarse_abs == reset_coarse_abs && new_fine_off < reset_fine_offset)) {
-                                    reset_coarse_abs = new_coarse_abs;
-                                    reset_fine_offset = new_fine_off;
-                                    need_reset = true;
+    // Insert source into band 0
+    band_bucket[0].push_back(src);
+    uint32_t max_band = 0;
+
+    for (uint32_t band = 0; band <= max_band + 1 && band < NUM_BAND_BUCKETS; ) {
+        if (band_bucket[band].empty()) {
+            band++;
+            continue;
+        }
+
+        // Phase 1: Process light edges within this band repeatedly until no more
+        // light-edge relaxations produce new nodes in this band.
+        // We process the band bucket, relaxing only light edges (weight < DELTA).
+        // Nodes whose light-edge relaxation lands in the same band are re-added
+        // to the band bucket for reprocessing.
+        while (!band_bucket[band].empty()) {
+            light_worklist.swap(band_bucket[band]);
+            band_bucket[band].clear();
+
+            for (uint32_t idx = 0; idx < light_worklist.size(); idx++) {
+                uint32_t u = light_worklist[idx];
+                uint32_t du = dist[u];
+                // Skip stale entries: if node's distance no longer maps to this band
+                if (du == INF || du / DELTA != band) continue;
+
+                uint32_t eStart = offset[u];
+                uint32_t eEnd = offset[u + 1];
+                for (uint32_t ei = eStart; ei < eEnd; ei++) {
+                    uint32_t w = csr_w[ei];
+                    if (w < DELTA) {
+                        // Light edge: relax and possibly re-add to same band
+                        uint32_t to = csr_to[ei];
+                        uint32_t nd = du + w;
+                        if (nd < dist[to]) {
+                            dist[to] = nd;
+                            uint32_t target_band = nd / DELTA;
+                            // Light edges with du in current band: nd = du + w where w < DELTA
+                            // target_band is either == band or == band+1
+                            // (since du/DELTA == band and w < DELTA, nd < (band+1)*DELTA + DELTA)
+                            if (target_band == band) {
+                                // Same band: add to current band bucket for reprocessing
+                                band_bucket[band].push_back(to);
+                            } else {
+                                // Different band (band+1 typically): defer
+                                if (target_band < NUM_BAND_BUCKETS) {
+                                    band_bucket[target_band].push_back(to);
+                                    if (target_band > max_band) max_band = target_band;
                                 }
                             }
                         }
                     }
-
-                    if (need_reset) {
-                        cur_coarse_abs = reset_coarse_abs;
-                        cur_fine_offset = reset_fine_offset;
-                        ci = (int)(cur_coarse_abs % num_active_coarse);
-                        fine_base = ci * W;
-                        fi = fine_base + cur_fine_offset;
-                        // Continue processing from new position - the outer while loops will handle it
-                        // We need to break out and let the outer loop re-enter
-                        // Actually, we can just continue the while loop since fi is now updated
-                        // But we need to also update the ci tracking
-                        // Let's break and let the outer loops handle it
-                        goto restart_coarse;
-                    }
                 }
-                cur_fine_offset++;
             }
+            // Don't clear light_worklist yet — we need it for Phase 2
+            // Actually we need to accumulate all settled nodes for heavy-edge phase.
+            // We'll collect them in heavy_targets temporarily.
+            // But it's simpler to just do Phase 2 after each light pass.
+            // Actually, the textbook algorithm says: do all light relaxations until
+            // the band is empty, collecting all settled nodes, then do heavy relaxations once.
+            // Let's collect settled nodes from this light pass.
+            for (uint32_t idx = 0; idx < light_worklist.size(); idx++) {
+                uint32_t u = light_worklist[idx];
+                uint32_t du = dist[u];
+                if (du != INF && du / DELTA == band) {
+                    heavy_targets.push_back(u);
+                }
+            }
+            light_worklist.clear();
+        }
 
-            // Done with this coarse bucket (or it's empty now)
-            // If coarse_count[ci] > 0, it means stale entries remain; 
-            // they'll never be valid since we've scanned all fine offsets.
-            // Clear them out to avoid blocking future circular reuse.
-            if (coarse_count[ci] > 0) {
-                // Drain remaining stale entries
-                for (int fo2 = 0; fo2 < W; fo2++) {
-                    int fi2 = fine_base + fo2;
-                    while (fine_head[fi2] != -1) {
-                        int idx = fine_head[fi2];
-                        fine_head[fi2] = pool_next[idx];
-                        coarse_count[ci]--;
+        // Phase 2: Process heavy edges for all nodes settled in this band
+        for (uint32_t u : heavy_targets) {
+            uint32_t du = dist[u];
+            // Verify node is still in this band (it must be, since light phase is done)
+            if (du == INF || du / DELTA != band) continue;
+
+            uint32_t eStart = offset[u];
+            uint32_t eEnd = offset[u + 1];
+            for (uint32_t ei = eStart; ei < eEnd; ei++) {
+                uint32_t w = csr_w[ei];
+                if (w >= DELTA) {
+                    // Heavy edge: relax into target band
+                    uint32_t to = csr_to[ei];
+                    uint32_t nd = du + w;
+                    if (nd < dist[to]) {
+                        dist[to] = nd;
+                        uint32_t target_band = nd / DELTA;
+                        if (target_band < NUM_BAND_BUCKETS) {
+                            band_bucket[target_band].push_back(to);
+                            if (target_band > max_band) max_band = target_band;
+                        }
                     }
                 }
             }
         }
+        heavy_targets.clear();
 
-        cur_coarse_abs++;
-        cur_fine_offset = 0;
-        continue;
-
-    restart_coarse:
-        // Scan pointer was reset; continue from new position
-        // The outer while loop will pick up from cur_coarse_abs, cur_fine_offset
-        continue;
+        band++;
     }
 
-done:
-
-    auto t1 = chrono::steady_clock::now();
-    double ms = chrono::duration<double, milli>(t1 - t0).count();
-
-    for (int i = 1; i <= n; i++) {
-        if (dist[i] < INF)
-            printf("d %d %lld\n", i, dist[i]);
+    // Output using original 1-based node IDs
+    for (uint32_t i = 1; i <= n; i++) {
+        uint32_t d = dist[i];
+        if (d < INF) {
+            out_char('d');
+            out_char(' ');
+            out_uint(i);
+            out_char(' ');
+            out_uint(d);
+            out_char('\n');
+        }
     }
 
-    printf("time_ms=%.3f\n", ms);
-    printf("relaxations=%lld\n", relaxations);
+    flush_out();
 
     return 0;
 }

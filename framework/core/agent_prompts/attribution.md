@@ -38,6 +38,8 @@ Look at the ideas in `CURRENT_IDEAS`. Based on this result, which ideas should h
 
 Only emit signals where there is clear causal evidence from the result. Do not signal ideas where the connection is tenuous. Emit at most one signal per idea.
 
+**FAIL-VERIFIER rule (critical):** If the experiment failed with `FAIL-VERIFIER`, **do not emit a `penalize` signal for any idea.** A correctness failure is an implementation bug, not evidence against the idea. You may write a detailed `## Analysis` section to document what went wrong, but the idea bank must not be affected. Emit no signal, or `neutral` if the format requires one.
+
 **Rule 2 — New idea (compact format)**
 If the result surfaces a genuinely novel direction NOT already covered by any existing idea in `CURRENT_IDEAS`, write a compact new idea entry.
 
@@ -79,6 +81,44 @@ Output ONLY the four XML-tagged blocks below. Output nothing outside the tags.
 If there are no signals to emit, output `[]` for `<idea_signals>`.
 If there is no new idea, output `NONE` for `<new_idea>`.
 If there is no do-not-repeat entry, output `NONE` for `<do_not_repeat_entry>`.
+
+---
+
+## Failure hypothesis fields (for `penalize` signals only)
+
+When emitting a `penalize` signal for a **FAIL-METRIC** experiment, you may optionally add failure memory fields to help future researchers avoid re-discovering the same failure mode.
+
+**Extended penalize signal format:**
+```json
+{
+  "id": "idea-042",
+  "signal": "penalize",
+  "reason": "one sentence — causal connection to this result",
+  "failure_hypothesis": "Per-iteration sorting in the hot loop added O(k log k) overhead per edge relaxation, directly explaining the 18% regression.",
+  "failure_confidence": "medium",
+  "failure_hypothesis_from": "exp-042",
+  "revive_condition": "Worth retrying only if sorting is hoisted out of the relaxation loop into a one-time preprocessing step."
+}
+```
+
+**Rules — read carefully before populating these fields:**
+
+1. **Only for FAIL-METRIC.** Never add failure hypothesis fields on a FAIL-VERIFIER experiment. See the FAIL-VERIFIER rule above.
+
+2. **Omit on ambiguity.** If the failure cause is not clearly supported by evidence in the result, do NOT populate `failure_hypothesis`. Silence is better than a guess. An absent field is the right default.
+
+3. **One sentence only** for `failure_hypothesis` and `revive_condition`. The sentence must reference concrete evidence from the result (observed behavior, metric values, diff). Pattern: "[observed X in the output/diff/metrics], [therefore Y is the likely cause]."
+
+4. **`failure_confidence` must be one of:** `"low"`, `"medium"`, `"high"`.
+   - `"high"`: the result contains direct evidence strongly isolating the cause (e.g., profiler output, direct metric correlation with the changed code path)
+   - `"medium"`: the cause is plausible and grounded in the result, but not fully isolated
+   - Prefer omitting over `"low"` — low-confidence hypotheses are suppressed from the idea window anyway
+
+5. **`failure_hypothesis_from`** should be the experiment ID (e.g., `"exp-042"`).
+
+6. **If `failure_hypothesis` is absent, omit all other failure fields** (`failure_confidence`, `failure_hypothesis_from`, `revive_condition`). Never emit partial records.
+
+7. **`blocked_by` vs `revive_condition`**: `blocked_by` (set by the Researcher) describes pre-execution conditions. `revive_condition` (set here) describes a post-failure concrete fix. They are distinct fields for distinct actors.
 
 ---
 
