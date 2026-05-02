@@ -1,0 +1,9 @@
+# Minimal dependencies for the local NeuralOperator CPU smoke benchmark.
+# PyTorch must also be installed for your platform.
+tensorly
+tensorly-torch
+configmypy
+zencfg
+ruamel-yaml
+opt-einsum
+

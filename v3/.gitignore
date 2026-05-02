@@ -1,0 +1,10 @@
+.env
+*.pem
+.autoresearch/
+external/
+workspace/current/
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
+
