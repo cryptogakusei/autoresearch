@@ -1,0 +1,8 @@
+Operator Splitting for Neural Operators
+Applied Mathematics Primitive — Numerical Methods for PDEs
+
+Operator splitting (Strang splitting, Lie-Trotter) decomposes a complex PDE operator into simpler sub-operators that are solved sequentially. For example, an advection-diffusion equation is split into an advection step and a diffusion step, each handled by a specialized solver. This exploits the different mathematical structures: diffusion is naturally handled in Fourier space (diagonal operator), while advection may be better handled in physical space. Strang splitting achieves second-order accuracy in the splitting time step.
+
+FNO insertion point: Structure each FNO layer as two sequential sub-layers: (1) a spectral sub-layer that handles the Fourier-domain linear mixing (analogous to diffusion/dispersion), followed by (2) a physical-space sub-layer with a local convolution or MLP that handles nonlinear/advective interactions. Rather than mixing spectral and physical operations in a single monolithic layer, this separation lets each sub-layer specialize. A learnable blending parameter controls the splitting ratio.
+
+Target failure mode: Difficulty learning PDE operators that mix fundamentally different mathematical structures (e.g., advection + diffusion, or pressure + viscosity in Navier-Stokes). A single Fourier layer tries to handle both global and local physics simultaneously, limiting expressiveness.

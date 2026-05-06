@@ -1,0 +1,6 @@
+Factorized Fourier Neural Operators
+arXiv:2111.13802 — Tran et al.
+
+We propose the Factorized Fourier Neural Operator (F-FNO), a learning-based approach for simulating partial differential equations (PDEs). Starting from a recently proposed Fourier representation of flow fields, the F-FNO bridges the performance gap between pure machine learning approaches to that of the best numerical or hybrid solvers. This is achieved with new representations - separable spectral layers and improved residual connections - and a combination of training strategies such as the Markov assumption, Gaussian noise, and cosine learning rate decay. On several challenging benchmark PDEs on regular grids, structured meshes, and point clouds, the F-FNO can scale to deeper networks and outperform both the FNO and the geo-FNO, reducing the error by 83% on the Navier-Stokes problem.
+
+Key architecture: The F-FNO factorizes the Fourier kernel operator across spatial dimensions. Instead of a single weight matrix R operating on all dimensions jointly, it uses separate weight matrices R_d for each dimension d. This reduces parameters to O(LH^2 MD) and is particularly useful for higher-dimensional problems. Combined with improved residual connections placed after nonlinearities, this enables scaling to deeper architectures.

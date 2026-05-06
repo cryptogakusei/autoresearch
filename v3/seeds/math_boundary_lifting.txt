@@ -1,0 +1,8 @@
+Boundary-Aware Lifting for Neural Operators
+Applied Mathematics Primitive — Boundary Value Problems
+
+Standard FNO uses periodic boundary conditions implicitly (FFT assumes periodicity). For PDEs with non-periodic boundaries (Dirichlet, Neumann, mixed), this creates a fundamental mismatch: the Fourier representation introduces Gibbs-like artifacts at boundaries. Classical approaches use boundary lifting functions that satisfy the boundary conditions exactly, then solve for the residual which can be periodic. Alternatively, sine/cosine transforms (DST/DCT) naturally enforce homogeneous Dirichlet/Neumann conditions.
+
+FNO insertion point: Replace the FFT in Fourier layers with a DCT (Type-II) for problems with Neumann-type boundaries, or DST (Type-I) for Dirichlet boundaries. Both are available in standard FFT libraries and have the same O(n log n) complexity. Alternatively, add a learned boundary lifting network: a small MLP that predicts boundary-compatible corrections applied before the Fourier layer, so the Fourier representation only needs to capture the periodic interior residual.
+
+Target failure mode: Elevated errors near domain boundaries in non-periodic PDEs (e.g., Darcy flow with fixed boundary conditions), where the periodic Fourier basis creates artificial oscillations that the model cannot easily suppress.

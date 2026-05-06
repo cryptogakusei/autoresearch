@@ -10,7 +10,7 @@ from typing import Any
 
 from .config import load_config
 from .descriptor import ExperimentDescriptor
-from .llm import LlmClient, MockLlmClient
+from .llm import LlmClient, MockLlmClient, TokenUsage
 from .models import Idea
 
 
@@ -79,6 +79,7 @@ class PromptingLlmClient(LlmClient):
         default_model: str,
         profiles: dict[str, Any] | None = None,
     ):
+        super().__init__()
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
@@ -179,33 +180,42 @@ Return JSON exactly shaped as:
 """.strip()
         return self._json_inference("diagnose", prompt)
 
+    def _signal_summary(self, signals: dict[str, Any]) -> tuple[list[str], list[str]]:
+        good = [e for e, r in signals.get("elements", {}).items() if r > 1.5]
+        bad = [e for e, r in signals.get("elements", {}).items() if r < 0.7]
+        return good, bad
+
     def propose_incremental(
         self, descriptor: ExperimentDescriptor, idea: Idea, signals: dict[str, Any]
     ) -> dict[str, Any]:
+        good, bad = self._signal_summary(signals)
+        signal_lines = ""
+        if good or bad:
+            signal_lines = f"\nWorking: {', '.join(good[:8]) or 'unclear'}. Not working: {', '.join(bad[:5]) or 'unclear'}."
         prompt = f"""
-Propose 1-2 small variations of experiment {idea.id}.
+You are proposing model architecture or hyperparameter changes for {descriptor.name}.
+All ideas must be concrete changes to the neural network, loss function, or training config.
+Do NOT propose changes to the experiment process, search strategy, or evaluation method.
 
-Current idea:
-{idea.hypothesis}
+Experiment {idea.id} tried: {idea.hypothesis}{signal_lines}
 
-CCTS signals:
-{json.dumps(signals, indent=2)}
-
-Return JSON exactly shaped as:
-{{"ideas": [{{"hypothesis": "...", "plan": "...", "elements": ["..."]}}]}}
+Propose 1-2 small variations — tweak architecture, hyperparameters, or loss weighting.
+Return JSON: {{"ideas": [{{"hypothesis": "...", "plan": "...", "elements": ["..."]}}]}}
 """.strip()
         return self._json_inference("incremental", prompt)
 
     def scout_queries(
         self, descriptor: ExperimentDescriptor, idea: Idea, signals: dict[str, Any]
     ) -> dict[str, Any]:
-        good = [f"+{e}" for e, r in signals.get("elements", {}).items() if r > 1.5]
-        bad = [f"-{e}" for e, r in signals.get("elements", {}).items() if r < 0.7]
-        signal_summary = " ".join(good + bad) if (good or bad) else "no signal yet"
+        good, bad = self._signal_summary(signals)
+        signal_summary = " ".join([f"+{e}" for e in good[:5]] + [f"-{e}" for e in bad[:3]])
+        if not signal_summary:
+            signal_summary = "no signal yet"
         prompt = f"""
 Domain: {descriptor.name}. Last experiment tried: {idea.hypothesis}
 Signal summary: {signal_summary}
-Generate 2-3 arXiv search queries targeting techniques we haven't tried yet.
+Generate 2-3 arXiv search queries for neural network architecture or training techniques we haven't tried.
+Queries must be about model design, not about experimentation methodology.
 Return JSON: {{"queries": ["...", "..."]}}
 """.strip()
         return self._json_inference("scout", prompt)
@@ -214,15 +224,18 @@ Return JSON: {{"queries": ["...", "..."]}}
         self, descriptor: ExperimentDescriptor, idea: Idea, signals: dict[str, Any],
         paper_context: str = "",
     ) -> dict[str, Any]:
-        good = [e for e, r in signals.get("elements", {}).items() if r > 1.5]
-        bad = [e for e, r in signals.get("elements", {}).items() if r < 0.7]
+        good, bad = self._signal_summary(signals)
         signal_lines = ""
         if good or bad:
-            signal_lines = f"\nWorking: {', '.join(good) or 'unclear'}. Not working: {', '.join(bad) or 'unclear'}."
+            signal_lines = f"\nWorking: {', '.join(good[:8]) or 'unclear'}. Not working: {', '.join(bad[:5]) or 'unclear'}."
         lit_lines = ""
         if paper_context:
             lit_lines = f"\n\nRelevant literature:\n{paper_context}"
         prompt = f"""
+You are proposing model architecture or training changes for {descriptor.name}.
+All ideas must be concrete changes to the neural network, loss function, or training config.
+Do NOT propose changes to the experiment process, search strategy, or evaluation method.
+
 Experiment {idea.id} tried: {idea.hypothesis}{signal_lines}{lit_lines}
 
 Propose 1-2 fundamentally different approaches. Each must differ structurally from past experiments.
@@ -305,6 +318,13 @@ class OpenAICompatibleLlmClient(PromptingLlmClient):
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"LLM provider HTTP {exc.code}: {body}") from exc
+        usage = raw.get("usage", {})
+        self.usage_log.append(TokenUsage(
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            model=raw.get("model", payload["model"]),
+            role=role,
+        ))
         content = raw["choices"][0]["message"]["content"]
         return _loads_json_content(content)
 
@@ -348,6 +368,13 @@ class AnthropicLlmClient(PromptingLlmClient):
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Anthropic provider HTTP {exc.code}: {body}") from exc
+        usage = raw.get("usage", {})
+        self.usage_log.append(TokenUsage(
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            model=raw.get("model", payload["model"]),
+            role=role,
+        ))
         content_blocks = raw.get("content", [])
         for block in content_blocks:
             if block.get("type") == "tool_use" and block.get("name") == "return_json":

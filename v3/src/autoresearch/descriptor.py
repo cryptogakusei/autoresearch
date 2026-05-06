@@ -68,6 +68,8 @@ class ExperimentDescriptor:
     implementInstructions: list[str]
     parseStructure: Callable[[Path], dict[str, Any] | None]
     llmProfiles: dict[str, LlmProfile] = field(default_factory=dict)
+    protectedConfigPaths: dict[str, list[str]] = field(default_factory=dict)
+    preflight: Callable[[Path, Path], dict[str, Any] | None] | None = None
 
     def primary_metric(self) -> MetricSpec:
         return self.metrics["primary"]
@@ -109,4 +111,3 @@ def load_descriptor(name: str) -> ExperimentDescriptor:
     if not isinstance(descriptor, ExperimentDescriptor):
         raise TypeError(f"Descriptor {name!r} did not expose DESCRIPTOR")
     return descriptor
-

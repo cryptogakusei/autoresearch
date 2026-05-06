@@ -1,0 +1,6 @@
+Mitigating Spectral Bias in Neural Operators via High-Frequency Scaling for Physical Systems
+arXiv:2503.13695 — 2025
+
+Neural operators have emerged as powerful surrogates for modeling complex physical problems. However, they suffer from spectral bias making them oblivious to high-frequency modes, which are present in multiscale physical systems. Therefore, they tend to produce over-smoothed solutions, which is particularly problematic in modeling turbulence and for systems with intricate patterns and sharp gradients such as multi-phase flow systems. In this work, we introduce a new approach named high-frequency scaling (HFS) to mitigate spectral bias in convolutional-based neural operators. By integrating HFS with proper variants of UNet neural operators, we demonstrate a higher prediction accuracy by mitigating spectral bias in single and two-phase flow problems. Unlike Fourier-based techniques, HFS is directly applied to the latent space, thus eliminating the computational cost associated with the Fourier transform.
+
+Key technique: High-frequency scaling (HFS) is applied directly to the latent space rather than requiring Fourier transforms. This mitigates spectral bias in convolutional-based neural operators. Diffusion models conditioned on HFS-enhanced neural operators substantially reduce errors compared to conditioning on standard neural operators.

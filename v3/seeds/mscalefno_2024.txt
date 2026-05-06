@@ -1,0 +1,6 @@
+MscaleFNO: Multi-scale Fourier Neural Operator Learning for Oscillatory Function Spaces
+arXiv:2412.20183 — 2024
+
+A multi-scale Fourier neural operator (MscaleFNO) is proposed to reduce the spectral bias of the FNO in learning the mapping between highly oscillatory functions, with application to the nonlinear mapping between the coefficient of the Helmholtz equation and its solution. The MscaleFNO consists of a series of parallel normal FNOs with scaled input of the function and the spatial variable, and their outputs are shown to be able to capture various high-frequency components of the mapping's image. Numerical methods demonstrate the substantial improvement of the MscaleFNO for the problem of wave scattering in the high-frequency regime over the normal FNO with a similar number of network parameters.
+
+Key architecture: Parallel FNO branches with different input scaling factors. Each branch receives a scaled version of the input function and spatial variable, allowing different branches to focus on different frequency bands. The outputs are combined to capture both low and high-frequency components of the solution. This addresses spectral bias without increasing per-branch parameter count.

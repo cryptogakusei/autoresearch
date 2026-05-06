@@ -42,6 +42,14 @@ def score_candidate(elements: list[str], signals: dict[str, Any]) -> float:
     return prod(ratios) ** (1 / len(ratios))
 
 
+def novelty_score(elements: list[str], vocabulary: list[str]) -> float:
+    if not elements:
+        return 0.0
+    known = set(vocabulary)
+    novel = sum(1 for el in elements if el not in known)
+    return novel / len(elements)
+
+
 def _ratios(good: list[Idea], bad: list[Idea], pairs: bool = False) -> dict[str, float]:
     keys = sorted(_collect_keys(good + bad, pairs=pairs))
     out: dict[str, float] = {}

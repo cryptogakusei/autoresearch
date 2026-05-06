@@ -1,0 +1,8 @@
+Sobolev Training Loss for Neural Operators
+Applied Mathematics Primitive — Function Space Theory
+
+Sobolev spaces H^s measure function regularity by requiring not just the function but also its derivatives (up to order s) to be square-integrable. Training neural operators with a Sobolev loss — penalizing errors in both the solution and its spatial derivatives — enforces that the learned operator maps into the correct regularity class. Czarnecki et al. (2017) showed Sobolev training improves generalization by constraining the learned function's smoothness properties. For PDE operators, this directly matches the mathematical structure: solutions of elliptic PDEs live in H^1 or H^2, so training in the corresponding norm is natural.
+
+FNO insertion point: Replace the standard relative L2 training loss with a weighted combination of relative L2 error and relative H1 seminorm error (finite-difference gradient matching). The H1 term weight is a hyperparameter (e.g., 0.1-0.5). This can be computed efficiently: finite differences for physical-space gradients, or directly in Fourier space by weighting spectral coefficients by |k|^2 before computing the error norm.
+
+Target failure mode: Over-smoothed predictions that minimize L2 error by averaging out sharp gradients and fine-scale structure. The L2 norm is insensitive to derivative errors, so models trained with L2 alone learn to smooth away high-frequency content rather than resolve it accurately.

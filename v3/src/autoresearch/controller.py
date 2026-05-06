@@ -3,26 +3,80 @@ from __future__ import annotations
 from dataclasses import asdict
 from pathlib import Path
 import shutil
-from typing import Any
+from typing import Any, Callable
 
 from .arxiv import fetch_papers, format_paper_context
 from .benchmark import BenchmarkError, run_benchmark
+from .config_guard import raise_for_config_violations, validate_protected_config_paths
 from .descriptor import ExperimentDescriptor
 from .llm import LlmClient
 from .models import Diagnosis, Failure, Idea, SelectionRecord, ValidationRecord
-from .signals import score_candidate, update_signals
+from .signals import novelty_score, score_candidate, update_signals
 from .storage import Storage
 from .utils import normalize_elements, now_iso
 from .validation import validate_result
 
 
+ProgressCallback = Callable[[str, str, dict[str, Any]], None]
+
+
 class Controller:
-    def __init__(self, root: Path, descriptor: ExperimentDescriptor, llm: LlmClient):
+    def __init__(
+        self,
+        root: Path,
+        descriptor: ExperimentDescriptor,
+        llm: LlmClient,
+        on_progress: ProgressCallback | None = None,
+    ):
         self.root = root
         self.descriptor = descriptor
         self.llm = llm
         self.storage = Storage(root)
         self.storage.init()
+        self._on_progress = on_progress or (lambda *_: None)
+
+    def _emit(self, phase: str, status: str, **data: Any) -> None:
+        self._on_progress(phase, status, data)
+
+    def _last_call_usage(self) -> dict[str, Any] | None:
+        if self.llm.usage_log:
+            u = self.llm.usage_log[-1]
+            return {"input": u.input_tokens, "output": u.output_tokens, "cost": u.cost, "role": u.role}
+        return None
+
+    @staticmethod
+    def _extract_benchmark_errors(result: dict[str, Any]) -> list[dict[str, Any]]:
+        if result.get("passed", True):
+            return []
+        orig_validation = result.get("validation", {})
+        if not isinstance(orig_validation, dict):
+            return []
+        orig_constraints = orig_validation.get("failedConstraints", [])
+        errors = []
+        for c in orig_constraints:
+            if isinstance(c, dict) and "reason" in c:
+                errors.append(c)
+        return errors
+
+    @staticmethod
+    def _format_failure_reason(
+        benchmark_errors: list[dict[str, Any]], constraint_failures: list[dict[str, Any]]
+    ) -> str:
+        if benchmark_errors:
+            reason = benchmark_errors[0].get("reason", "")
+            lines = reason.strip().splitlines()
+            last_lines = lines[-3:] if len(lines) > 3 else lines
+            return "Benchmark error: " + " | ".join(l.strip() for l in last_lines if l.strip())
+        if constraint_failures:
+            parts = []
+            for f in constraint_failures[:3]:
+                metric = f.get("metric", "?")
+                actual = f.get("actual", "?")
+                expected = f.get("expected", "?")
+                op = f.get("op", "?")
+                parts.append(f"{metric}: {actual} (need {op} {expected})")
+            return "Constraint failed: " + "; ".join(parts)
+        return "Validation failed"
 
     def seed_default(self) -> list[Idea]:
         source = "default"
@@ -88,9 +142,13 @@ class Controller:
         state.phaseStatus = "in_progress"
         self.storage.save_run_state(state)
 
+        self.llm.reset_usage()
         try:
+            self._emit("pick", "done", id=idea.id, hypothesis=idea.hypothesis, parent=idea.parentId)
+
             self._prepare_workspace(tree, idea)
             workspace = self.storage.workspace_for(self.descriptor.name)
+            self._emit("implement", "start", id=idea.id)
             implementation = self.llm.implement(self.descriptor, idea, workspace)
             self.storage.write_experiment_json(
                 self.descriptor.name, idea.id, "implementation_attempt.json", implementation
@@ -110,6 +168,17 @@ class Controller:
             self.storage.write_experiment_json(
                 self.descriptor.name, idea.id, "implementation.json", implementation
             )
+            self._emit("implement", "done", id=idea.id, summary=idea.implementationSummary, files=applied_files, tokens=self._last_call_usage())
+
+            state.phase = "preflight"
+            self.storage.save_run_state(state)
+            self._emit("preflight", "start", id=idea.id)
+            preflight_result = self._run_preflight(workspace)
+            if preflight_result is not None:
+                self.storage.write_experiment_json(
+                    self.descriptor.name, idea.id, "preflight.json", preflight_result
+                )
+            self._emit("preflight", "done", id=idea.id, result=preflight_result)
 
             artifact_dir = self.storage.archive_artifact(
                 self.descriptor.name, idea.id, self.descriptor.artifact.archiveGlobs
@@ -122,24 +191,40 @@ class Controller:
 
             state.phase = "benchmark"
             self.storage.save_run_state(state)
+            self._emit("benchmark", "start", id=idea.id)
             result = run_benchmark(self.descriptor, artifact_dir, idea.id, self.root)
+            benchmark_validation = result.get("validation")
+            if isinstance(benchmark_validation, dict):
+                result["benchmarkValidation"] = benchmark_validation
+            benchmark_errors = self._extract_benchmark_errors(result)
             passed, failures, validator_version = validate_result(
                 result, self.descriptor, idea.id
             )
+            if benchmark_errors:
+                failures = benchmark_errors + failures
+                passed = False
             validation = ValidationRecord(
                 passed=passed,
                 failedConstraints=failures,
                 validatorVersion=validator_version,
             )
+            result["controllerValidation"] = asdict(validation)
             result["validation"] = asdict(validation)
+            if benchmark_errors:
+                metadata = result.setdefault("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata["benchmarkFailureReason"] = benchmark_errors[0].get("reason")
             self.storage.write_experiment_json(
                 self.descriptor.name, idea.id, "benchmark.json", result
             )
             idea.metrics = result["metrics"]
             idea.validation = validation
+            self._emit("benchmark", "done", id=idea.id, passed=passed, metrics=idea.metrics)
             if not passed:
-                self._fail(idea, "validation", "Validation constraints failed", retryable=False, details={"failures": failures})
+                fail_reason = self._format_failure_reason(benchmark_errors, failures)
+                self._fail(idea, "validation", fail_reason, retryable=False, details={"failures": failures})
                 self.storage.save_tree(self.descriptor.name, tree)
+                self._emit("experiment", "failed", id=idea.id, failed_phase="validation", reason=fail_reason)
                 return idea
 
             parent = tree.ideas.get(idea.parentId) if idea.parentId else None
@@ -149,6 +234,7 @@ class Controller:
             self.storage.write_experiment_json(
                 self.descriptor.name, idea.id, "diagnosis.json", diagnosis
             )
+            self._emit("diagnose", "done", id=idea.id, outcome=diagnosis["outcome"], reason=diagnosis["reason"], tokens=self._last_call_usage())
 
             idea.status = "done"
             idea.completed = now_iso()
@@ -156,16 +242,23 @@ class Controller:
             self._merge_vocabulary(tree)
             signals = update_signals(tree, self.descriptor)
             self.storage.save_signals(self.descriptor.name, signals)
+            self._emit("generate", "start", id=idea.id)
             self._generate_and_select(tree, idea, signals)
             self.storage.save_tree(self.descriptor.name, tree)
+            children = [tree.ideas[cid] for cid in idea.children if cid in tree.ideas and tree.ideas[cid].status == "pending"]
+            self._emit("generate", "done", id=idea.id, children=[(c.id, c.hypothesis) for c in children[-3:]])
 
             state.phase = "finalize"
             state.phaseStatus = "completed"
             state.lastCompletedStep = "select"
             self.storage.save_run_state(state)
             self.storage.append_log("events.jsonl", {"event": "experiment_done", "id": idea.id})
+            usage = self.llm.total_usage()
+            self._emit("experiment", "done", id=idea.id, usage=usage)
             return idea
         except (BenchmarkError, Exception) as exc:
+            usage = self.llm.total_usage()
+            self._emit("experiment", "failed", id=idea.id, failed_phase=state.phase or "unknown", reason=str(exc), usage=usage)
             self._fail(idea, state.phase or "unknown", str(exc), retryable=True)
             self.storage.save_tree(self.descriptor.name, tree)
             self.storage.append_log(
@@ -173,13 +266,31 @@ class Controller:
             )
             return idea
 
-    def autoloop(self, count: int) -> list[Idea]:
+    def _run_preflight(self, workspace: Path) -> dict[str, Any] | None:
+        if self.descriptor.protectedConfigPaths:
+            baseline = self.root / self.descriptor.artifact.baselinePath
+            violations = validate_protected_config_paths(
+                baseline_root=baseline,
+                workspace_root=workspace,
+                protected_paths=self.descriptor.protectedConfigPaths,
+            )
+            raise_for_config_violations(violations)
+        if self.descriptor.preflight is None:
+            return None
+        return self.descriptor.preflight(self.root, workspace)
+
+    def autoloop(self, count: int, budget: float | None = None) -> list[Idea]:
         completed: list[Idea] = []
+        total_cost = 0.0
         for _ in range(count):
             result = self.run_one()
             if result is None:
                 break
             completed.append(result)
+            total_cost += self.llm.total_usage().get("cost", 0.0)
+            if budget is not None and total_cost >= budget:
+                self._emit("loop", "budget_exceeded", spent=total_cost, budget=budget)
+                break
         return completed
 
     def ideas(self) -> list[Idea]:
@@ -220,7 +331,9 @@ class Controller:
             if parent.diagnosis and parent.diagnosis.outcome == "improved":
                 score += 5
         else:
-            score += 3
+            score += 13
+            if idea.sourceRef and idea.sourceRef.startswith("seeds/math_"):
+                score += 2
         score -= self._depth(tree, idea) * 0.5
         return score
 
@@ -234,6 +347,7 @@ class Controller:
 
     def _scout_literature(self, idea: Idea, signals: dict[str, Any]) -> str:
         try:
+            self._emit("scout", "start", id=idea.id)
             raw = self.llm.scout_queries(self.descriptor, idea, signals)
             queries = raw.get("queries", [])
             if not isinstance(queries, list) or not queries:
@@ -243,14 +357,16 @@ class Controller:
                 return ""
             papers = fetch_papers(queries, max_per_query=3)
             if not papers:
+                self._emit("scout", "done", id=idea.id, queries=queries, papers=0)
                 return ""
-            context = format_paper_context(papers, max_chars=4000)
+            context = format_paper_context(papers, max_chars=2000)
             self.storage.append_log("events.jsonl", {
                 "event": "literature_scout",
                 "idea": idea.id,
                 "queries": queries,
                 "papers_found": len(papers),
             })
+            self._emit("scout", "done", id=idea.id, queries=queries, papers=len(papers))
             return context
         except Exception:
             return ""
@@ -262,6 +378,7 @@ class Controller:
             self.llm.propose_divergent(self.descriptor, idea, signals, paper_context=paper_context)
         )
         candidates: list[dict[str, Any]] = []
+        vocab = tree.elementVocabulary
         for idx, candidate in enumerate([*inc, *div]):
             label = chr(ord("A") + idx)
             elements = normalize_elements(candidate["elements"])
@@ -271,12 +388,19 @@ class Controller:
                     "label": label,
                     "elements": elements,
                     "cctsScore": score_candidate(elements, signals),
+                    "noveltyScore": novelty_score(elements, vocab),
                 }
             )
         deterministic = sorted(candidates, key=lambda c: c["cctsScore"], reverse=True)
-        final = deterministic[:3]
+        top_by_ccts = deterministic[:2]
+        most_novel = max(candidates, key=lambda c: c["noveltyScore"])
+        final_labels = {c["label"] for c in top_by_ccts}
+        if most_novel["label"] not in final_labels:
+            final = top_by_ccts + [most_novel]
+        else:
+            final = deterministic[:3]
         selection = SelectionRecord(
-            mode="deterministic",
+            mode="deterministic+novelty",
             triggerReasons=[],
             deterministicRanking=[c["label"] for c in deterministic],
             finalRanking=[c["label"] for c in final],

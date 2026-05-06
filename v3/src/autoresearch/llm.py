@@ -8,8 +8,58 @@ from .models import Idea
 from .utils import normalize_elements
 
 
+PRICING_PER_1M: dict[str, tuple[float, float]] = {
+    "gpt-4.1": (2.00, 8.00),
+    "gpt-4.1-mini": (0.40, 1.60),
+    "gpt-4.1-nano": (0.10, 0.40),
+    "gpt-5.5": (2.00, 8.00),
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "o3": (2.00, 8.00),
+    "o4-mini": (1.10, 4.40),
+    "claude-opus-4-6": (15.00, 75.00),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-haiku-4-5-20251001": (0.80, 4.00),
+    "claude-3-5-sonnet-latest": (3.00, 15.00),
+}
+
+
+def estimate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+    for prefix, (inp_price, out_price) in PRICING_PER_1M.items():
+        if model.startswith(prefix):
+            return (input_tokens * inp_price + output_tokens * out_price) / 1_000_000
+    return 0.0
+
+
+class TokenUsage:
+    __slots__ = ("input_tokens", "output_tokens", "model", "role")
+
+    def __init__(self, input_tokens: int, output_tokens: int, model: str, role: str):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.model = model
+        self.role = role
+
+    @property
+    def cost(self) -> float:
+        return estimate_cost(self.input_tokens, self.output_tokens, self.model)
+
+
 class LlmClient:
     applies_file_edits = False
+
+    def __init__(self) -> None:
+        self.usage_log: list[TokenUsage] = []
+
+    def reset_usage(self) -> None:
+        self.usage_log.clear()
+
+    def total_usage(self) -> dict[str, Any]:
+        return {
+            "input_tokens": sum(u.input_tokens for u in self.usage_log),
+            "output_tokens": sum(u.output_tokens for u in self.usage_log),
+            "cost": sum(u.cost for u in self.usage_log),
+        }
 
     def seed_ideas(
         self, descriptor: ExperimentDescriptor, source: str, text: str

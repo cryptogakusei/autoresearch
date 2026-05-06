@@ -11,6 +11,7 @@ from autoresearch.descriptor import (
     MetricSpec,
     ValidationSpec,
 )
+from autoresearch.preflight import run_neuraloperator_fno_gpu_preflight
 
 
 def parse_structure(artifact_dir: Path) -> dict[str, object] | None:
@@ -47,21 +48,23 @@ DESCRIPTOR = ExperimentDescriptor(
     benchmark=BenchmarkSpec(
         command=[
             "python3",
-            "benchmarks/neuraloperator_fno/run_darcy_gpu.py",
+            "benchmarks/neuraloperator_fno/run_multi_pde_gpu.py",
             "{artifact_dir}",
             "{experiment_id}",
-            "--data-dir", "/home/ubuntu/data/darcy",
+            "--data-dir", "/home/ubuntu/data",
+            "--datasets", "darcy_128,navier_stokes_128",
             "--experiment-type", "{experiment_type}",
         ],
-        timeoutSec=600,
-        resultParser="canonical-json",
+        timeoutSec=900,
     ),
     validation=ValidationSpec(
         hidden=False,
         required=[
             MetricConstraint(metric="valid", op="==", value=True, dataset="darcy_128"),
+            MetricConstraint(metric="valid", op="==", value=True, dataset="navier_stokes_128"),
             MetricConstraint(metric="peak_memory_gb", op="<=", value=40.0, dataset="darcy_128"),
             MetricConstraint(metric="train_time_sec", op="<=", value=600.0, dataset="darcy_128"),
+            MetricConstraint(metric="train_time_sec", op="<=", value=600.0, dataset="navier_stokes_128"),
         ],
     ),
     metrics={
@@ -75,6 +78,16 @@ DESCRIPTOR = ExperimentDescriptor(
             MetricSpec(
                 name="spectral_hf_error",
                 unit="rel",
+                direction="minimize",
+            ),
+            MetricSpec(
+                name="h1_error",
+                unit="rel",
+                direction="minimize",
+            ),
+            MetricSpec(
+                name="param_count",
+                unit="params",
                 direction="minimize",
             ),
             MetricSpec(
@@ -102,14 +115,27 @@ DESCRIPTOR = ExperimentDescriptor(
         ],
     },
     implementInstructions=[
-        "This is a Phase 1 GPU target for NeuralOperator/FNO autoresearch.",
+        "This is a Phase 2 GPU target for NeuralOperator/FNO autoresearch.",
+        "The model is benchmarked on multiple 2D PDEs: Darcy flow (elliptic) and Navier-Stokes (time-dependent).",
+        "build_model(config) receives per-dataset config with in_channels and out_channels already set.",
+        "NEVER change in_channels or out_channels in smoke_config.json — these are fixed by the benchmark harness.",
         "Only edit the allowed files under workspace/current/neuraloperator_fno_gpu.",
         "Do not clone repositories, download datasets, run training, run benchmarks, or inspect validators.",
-        "The benchmark runs on a remote GPU with real Darcy flow data at 128x128 resolution.",
         "Keep high_frequency_residual_fno.py self-contained with NeuralOperator imports.",
         "The model must define HighFrequencyResidualFNO, build_model(config), and frequency_weighted_mse.",
-        "You may tune hyperparameters in smoke_config.json (epochs, learning_rate, n_modes, hidden_channels, etc.).",
+        "You may tune hyperparameters in smoke_config.json shared section (n_modes, hidden_channels, n_layers, learning_rate, epochs, etc.).",
+        "Config format: {\"shared\": {...}, \"datasets\": {\"darcy_128\": {...}, \"navier_stokes_128\": {...}}}.",
     ],
     parseStructure=parse_structure,
     llmProfiles={},
+    protectedConfigPaths={
+        "benchmarks/smoke_config.json": [
+            "shared.resolution",
+            "shared.train_samples",
+            "shared.val_samples",
+            "datasets.*.in_channels",
+            "datasets.*.out_channels",
+        ]
+    },
+    preflight=run_neuraloperator_fno_gpu_preflight,
 )

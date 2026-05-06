@@ -1,0 +1,8 @@
+Wavelet Multiresolution Analysis for Neural Operators
+Applied Mathematics Primitive — Wavelet Theory
+
+Multiresolution analysis (MRA) decomposes functions into a hierarchy of approximation spaces V_0 ⊂ V_1 ⊂ ... via orthogonal wavelet bases. Unlike Fourier modes which are global, wavelets provide simultaneous space-frequency localization: each wavelet coefficient captures both a spatial location and a frequency band. The discrete wavelet transform (DWT) computes this decomposition in O(n) time. For PDEs with localized features (shocks, boundary layers, vortices), wavelet representations are sparse where Fourier representations are not.
+
+FNO insertion point: Add a parallel wavelet branch alongside each Fourier layer. The Fourier branch handles global low-frequency mixing as usual. The wavelet branch applies a single-level DWT (e.g., Haar or DB2), processes detail coefficients with a small learned pointwise transform, then reconstructs via inverse DWT. The two branches are summed. This gives the model explicit capacity for localized high-frequency features without increasing Fourier mode count.
+
+Target failure mode: Poor resolution of spatially localized features — boundary layers in Darcy flow, vortex cores in Navier-Stokes — where the Fourier representation requires many modes to represent what a few wavelet coefficients capture naturally.

@@ -1,0 +1,8 @@
+Spectral Preconditioning for Neural Operators
+Applied Mathematics Primitive — Iterative Methods / Preconditioning
+
+Preconditioning transforms a poorly conditioned linear system Ax=b into an equivalent system M^{-1}Ax = M^{-1}b where M approximates A and is cheap to invert. In spectral methods, diagonal preconditioning by the symbol of the principal part of the PDE operator dramatically improves convergence. For Helmholtz-type operators, this means dividing spectral coefficients by (|k|^2 + λ), which normalizes the energy across frequency bands and prevents low modes from dominating the optimization landscape.
+
+FNO insertion point: Add a frequency-dependent normalization layer after each Fourier-domain multiplication. Instead of standard layer normalization (which operates in physical space and treats all frequencies equally), normalize spectral coefficients by a learned frequency-dependent scale: a_k → a_k / (σ_k + ε) where σ_k is a learnable per-mode scale parameter initialized to 1. This acts as a spectral preconditioner that balances the contribution of different frequency bands during training.
+
+Target failure mode: Spectral bias during training — the network learns low-frequency components quickly but converges slowly on high-frequency components because the loss landscape is dominated by low-mode errors. This is the neural operator analogue of the ill-conditioning that preconditioning addresses in classical solvers.

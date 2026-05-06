@@ -37,17 +37,23 @@ def run_benchmark(
             command=command,
             artifact_dir=artifact_dir,
             local_root=root,
+            experiment_id=experiment_id,
             timeout=descriptor.benchmark.timeoutSec,
         )
     else:
-        completed = subprocess.run(
-            command,
-            cwd=root,
-            check=False,
-            text=True,
-            capture_output=True,
-            timeout=descriptor.benchmark.timeoutSec,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=root,
+                check=False,
+                text=True,
+                capture_output=True,
+                timeout=descriptor.benchmark.timeoutSec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise BenchmarkError(
+                f"benchmark timed out after {descriptor.benchmark.timeoutSec} seconds"
+            ) from exc
         if completed.returncode != 0:
             raise BenchmarkError(completed.stderr.strip() or completed.stdout.strip())
         stdout = completed.stdout
@@ -56,4 +62,3 @@ def run_benchmark(
         return json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise BenchmarkError(f"Benchmark did not emit valid JSON: {exc}") from exc
-

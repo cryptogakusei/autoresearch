@@ -1,17 +1,29 @@
 {
-  "dataset": "darcy_128",
-  "epochs": 50,
-  "resolution": 128,
-  "train_samples": 1000,
-  "val_samples": 100,
-  "batch_size": 32,
-  "in_channels": 3,
-  "out_channels": 1,
-  "n_modes": [16, 16],
-  "hidden_channels": 32,
-  "n_layers": 4,
-  "mixed_precision": false,
-  "frequency_loss_weight": 0.25,
-  "residual_weight": 0.1,
-  "learning_rate": 0.001
+  "shared": {
+    "resolution": 128,
+    "train_samples": 1000,
+    "val_samples": 100,
+    "batch_size": 32,
+    "n_modes": [16, 16],
+    "hidden_channels": 32,
+    "n_layers": 4,
+    "mixed_precision": false,
+    "frequency_loss_weight": 0.25,
+    "residual_weight": 0.1,
+    "learning_rate": 0.001
+  },
+  "datasets": {
+    "darcy_128": {
+      "dataset": "darcy_128",
+      "in_channels": 3,
+      "out_channels": 1,
+      "epochs": 50
+    },
+    "navier_stokes_128": {
+      "dataset": "navier_stokes_128",
+      "in_channels": 3,
+      "out_channels": 1,
+      "epochs": 50
+    }
+  }
 }

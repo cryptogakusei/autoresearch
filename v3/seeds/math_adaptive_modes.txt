@@ -1,0 +1,8 @@
+Adaptive Spectral Mode Selection for Neural Operators
+Applied Mathematics Primitive — Adaptive Spectral Methods
+
+In adaptive spectral methods, the number of retained modes is determined dynamically based on the spectral decay of the solution. For smooth solutions, few modes suffice; for rough or oscillatory solutions, more modes are needed. Spectral coefficient thresholding (retaining modes where |a_k| > ε) provides near-optimal approximation in the correct Sobolev norm. This is analogous to adaptive mesh refinement but in frequency space.
+
+FNO insertion point: Replace the fixed mode truncation in each Fourier layer with a learned soft-thresholding mechanism. Each Fourier coefficient is multiplied by a sigmoid gate σ(w_k · |a_k| + b_k) where w_k and b_k are learnable per-mode parameters. This allows the model to learn which modes are informative per-layer: early layers might retain more modes for feature extraction while later layers focus on fewer dominant modes. The gating is differentiable and adds negligible parameters.
+
+Target failure mode: Suboptimal accuracy-efficiency tradeoff from fixed mode truncation. Low fixed mode count loses high-frequency content; high fixed mode count wastes parameters on uninformative modes and may overfit to noise in the spectral tails.

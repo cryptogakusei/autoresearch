@@ -1,0 +1,8 @@
+Spectral Viscosity for Neural Operators
+Applied Mathematics Primitive — Spectral Methods
+
+Spectral viscosity is a classical technique from numerical PDE theory (Tadmor, 1989) that adds scale-dependent artificial dissipation to suppress Gibbs oscillations and aliasing in spectral methods while preserving convergence to the correct weak solution. In the continuous setting, a viscosity kernel Q_N acts only on high-frequency modes above a threshold m_N, damping them at rate proportional to |k|^2 without affecting low modes. This is the standard approach for stable spectral approximation of nonlinear conservation laws and turbulent flows.
+
+FNO insertion point: After each Fourier layer's spectral multiplication, apply a learned spectral viscosity mask that damps the highest retained modes. The mask is parameterized as a smooth sigmoid function over mode indices with learnable cutoff and steepness, ensuring the model can adaptively control how aggressively high-frequency spectral content is attenuated. This acts as an inductive bias toward physically stable solutions.
+
+Target failure mode: Rollout instability and spurious high-frequency oscillations in time-dependent PDE predictions (e.g., Navier-Stokes), where the FNO accumulates aliasing artifacts from repeated spectral truncation.

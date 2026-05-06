@@ -1,0 +1,8 @@
+Spectral Dealiasing via 3/2 Rule for Neural Operators
+Applied Mathematics Primitive — Pseudospectral Methods
+
+The 3/2-rule (or 2/3-rule) is the standard dealiasing technique in pseudospectral methods for nonlinear PDEs. When computing products in physical space and transforming back to spectral space, the nonlinearity generates modes beyond the resolution cutoff that fold back (alias) into the resolved range. Zero-padding the spectral representation to 3/2 the original size before the inverse FFT, computing the nonlinearity on the finer grid, then truncating back, exactly eliminates quadratic aliasing errors. This is universally used in turbulence DNS codes.
+
+FNO insertion point: Before the pointwise nonlinearity (GELU/ReLU) that follows each Fourier layer, zero-pad the spectral representation to 3/2 resolution, apply inverse FFT on the padded grid, compute the nonlinearity in physical space, then FFT back and truncate to original resolution. This prevents aliasing from the nonlinear activation corrupting the spectral coefficients that the next Fourier layer operates on.
+
+Target failure mode: Accuracy degradation when the FNO retains many Fourier modes, where nonlinear activations create spectral content that aliases back into the resolved band, introducing systematic errors that compound through layers.
